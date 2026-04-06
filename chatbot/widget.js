@@ -209,14 +209,22 @@
           });
 
           read();
+        }).catch(function (readErr) {
+          console.error("[chatbot] stream read error:", readErr);
+          typingDiv.classList.remove("typing");
+          typingDiv.textContent = "Stream error: " + readErr.message;
+          isBusy = false;
+          send.disabled = false;
         });
       }
       read();
     })
     .catch(function (err) {
       // Auto-retry once — handles Render free tier cold start (~30s wake-up)
-      typingDiv.textContent = "Waking up server, retrying...";
+      console.warn("[chatbot] first attempt failed:", err);
+      typingDiv.textContent = "Waking up server, retrying in 30s…";
       setTimeout(function () {
+        typingDiv.textContent = "Retrying…";
         fetch(CHATBOT_API + "/chat", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -249,16 +257,22 @@
                 } catch (_) {}
               });
               read();
+            }).catch(function (readErr) {
+              console.error("[chatbot] stream read error (retry):", readErr);
+              typingDiv.classList.remove("typing");
+              typingDiv.textContent = "Stream error: " + readErr.message;
+              isBusy = false; send.disabled = false;
             });
           }
           read();
         })
-        .catch(function () {
+        .catch(function (err2) {
+          console.error("[chatbot] retry failed:", err2);
           typingDiv.classList.remove("typing");
-          typingDiv.textContent = "Sorry, I'm having trouble connecting. Please try again.";
+          typingDiv.textContent = "Connection failed: " + err2.message + ". Check browser console for details.";
           isBusy = false; send.disabled = false;
         });
-      }, 10000);  // wait 10s then retry
+      }, 30000);  // wait 30s — Render free tier cold start can take ~30s
     });
   }
 })();

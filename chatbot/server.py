@@ -180,7 +180,15 @@ async def chat(request: ChatRequest):
                 yield f"data: {json.dumps({'text': text})}\n\n"
         yield "data: [DONE]\n\n"
 
-    return StreamingResponse(generate(), media_type="text/event-stream")
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 # ── Serve widget JS ───────────────────────────────────────────────────────────
