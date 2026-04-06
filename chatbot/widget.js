@@ -1,6 +1,6 @@
 (function () {
   // ── Config (auto-replaced by inject_widget.py) ──────────────────────────
-  var CHATBOT_API = "https://flat-tools-occur.loca.lt";   // e.g. https://abc123.ngrok.io
+  var CHATBOT_API = "https://eleven-mice-search.loca.lt";   // e.g. https://abc123.ngrok.io
   var STORE_NAME  = "myaistore";
   var ACCENT      = "#212121";
   var ACCENT_LITE = "#837E6B";
@@ -104,6 +104,11 @@
   var history = [];   // [{role, content}]
   var isOpen  = false;
   var isBusy  = false;
+
+  // ── Wake up tunnel on page load (prevents localtunnel interstitial) ────────
+  fetch(CHATBOT_API + "/health", {
+    headers: { "bypass-tunnel-reminder": "true" }
+  }).catch(function () {});
 
   // ── Toggle open / close ───────────────────────────────────────────────────
   btn.addEventListener("click", function () {
