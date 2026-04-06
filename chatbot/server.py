@@ -14,6 +14,7 @@ Run:
 import os
 import re
 import json
+import time
 from pathlib import Path
 
 import requests as http_requests
@@ -48,18 +49,80 @@ an online footwear store based in India. You help customers with:
 - Order status and tracking (when order info is provided to you)
 - Product details and comparisons
 
-Our current product catalogue:
-1. Classic Comfort Sneaker — ₹3,999 | Sizes UK 6–10 | Everyday casual sneaker
-2. Lightweight Running Shoe — ₹5,499 | Sizes UK 6–10 | Daily runs and gym sessions
-3. Easy Slip-On Loafer — ₹2,999 | Sizes UK 6–9 | Effortless slip-on for indoor/outdoor
-4. High Performance Trainer — ₹6,999 | Sizes UK 7–11 | Cross-training and sprints
-
 Store URL: https://myaistore-5.myshopify.com
 
+The live product catalogue will be provided to you in [PRODUCT CATALOGUE].
 When order information is provided to you in [ORDER DATA], use it to answer the
 customer's question accurately. Always be warm and helpful.
 Keep responses concise. Always respond in the same language the customer uses
 (English or Hindi)."""
+
+# ── Product catalogue cache (refreshes every 5 minutes) ──────────────────────
+_product_cache: dict = {"data": None, "fetched_at": 0.0}
+PRODUCT_CACHE_TTL = 300  # seconds
+
+
+# ── Shopify product catalogue ─────────────────────────────────────────────────
+
+def fetch_products() -> list[dict]:
+    """Fetch all active products from Shopify, with 5-minute in-memory cache."""
+    now = time.time()
+    if _product_cache["data"] is not None and now - _product_cache["fetched_at"] < PRODUCT_CACHE_TTL:
+        return _product_cache["data"]
+    try:
+        r = http_requests.get(
+            f"{SHOPIFY_API_BASE}/products.json",
+            headers=SHOPIFY_HEADERS,
+            params={"status": "active", "limit": 250, "fields": "id,title,product_type,tags,variants,options,handle"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        products = r.json().get("products", [])
+        _product_cache["data"] = products
+        _product_cache["fetched_at"] = now
+        return products
+    except Exception:
+        return _product_cache["data"] or []
+
+
+def format_products_context(products: list[dict]) -> str:
+    """Convert Shopify product list into a readable catalogue for Groq."""
+    if not products:
+        return "No products currently available."
+    lines = []
+    for i, p in enumerate(products, 1):
+        # Price range from variants
+        prices = [float(v["price"]) for v in p.get("variants", []) if v.get("price")]
+        if prices:
+            lo, hi = min(prices), max(prices)
+            price_str = f"₹{lo:,.0f}" if lo == hi else f"₹{lo:,.0f}–₹{hi:,.0f}"
+        else:
+            price_str = "Price on request"
+
+        # Available sizes from the Size option
+        sizes = []
+        for opt in p.get("options", []):
+            if "size" in opt["name"].lower():
+                sizes = opt["values"]
+        size_str = f"Sizes {', '.join(sizes)}" if sizes else ""
+
+        # Tags for context (running, casual, etc.)
+        tags = p.get("tags", "")
+
+        # Product URL
+        handle = p.get("handle", "")
+        url = f"https://myaistore-5.myshopify.com/products/{handle}" if handle else ""
+
+        parts = [f"{i}. {p['title']} — {price_str}"]
+        if size_str:
+            parts[0] += f" | {size_str}"
+        if tags:
+            parts[0] += f" | Tags: {tags}"
+        if url:
+            parts.append(f"   Link: {url}")
+        lines.append("\n".join(parts))
+
+    return "\n".join(lines)
 
 
 # ── Shopify order lookup ──────────────────────────────────────────────────────
@@ -150,8 +213,10 @@ async def chat(request: ChatRequest):
     )
     order_match = ORDER_PATTERN.search(last_user_msg)
 
-    # Build messages for Groq
-    system = SYSTEM_PROMPT
+    # Build messages for Groq — inject live product catalogue
+    products = fetch_products()
+    system = SYSTEM_PROMPT + f"\n\n[PRODUCT CATALOGUE]\n{format_products_context(products)}"
+
     if order_match:
         order_number = order_match.group(1)
         order = fetch_order(order_number)
