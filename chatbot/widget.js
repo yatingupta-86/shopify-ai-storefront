@@ -37,6 +37,12 @@
       width: 8px; height: 8px; border-radius: 50%;
       background: #4caf50; display: inline-block;
     }
+    #ai-chat-clear {
+      margin-left: auto; background: none; border: 1px solid rgba(255,255,255,0.4);
+      color: #fff; border-radius: 12px; padding: 3px 10px; font-size: 11px;
+      cursor: pointer; opacity: 0.8;
+    }
+    #ai-chat-clear:hover { opacity: 1; }
 
     #ai-chat-messages {
       flex: 1; overflow-y: auto; padding: 14px;
@@ -89,6 +95,7 @@
   box.innerHTML = `
     <div id="ai-chat-header">
       <span class="dot"></span> ${STORE_NAME} Assistant
+      <button id="ai-chat-clear" title="Clear chat history">Clear</button>
     </div>
     <div id="ai-chat-messages"></div>
     <div id="ai-chat-footer">
@@ -105,10 +112,53 @@
   var isOpen  = false;
   var isBusy  = false;
 
-  // ── Wake up tunnel on page load (prevents localtunnel interstitial) ────────
-  fetch(CHATBOT_API + "/health", {
-    headers: { "bypass-tunnel-reminder": "true" }
-  }).catch(function () {});
+  var STORAGE_KEY = "ai_chat_" + STORE_NAME;
+  var HISTORY_TTL = 24 * 60 * 60 * 1000; // 24 hours in ms
+
+  // ── Persist history to localStorage ──────────────────────────────────────
+  function saveHistory() {
+    try {
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        ts: Date.now(),
+        messages: history.slice(-40), // keep last 40 messages max
+      }));
+    } catch (_) {}
+  }
+
+  function loadHistory() {
+    try {
+      var raw = localStorage.getItem(STORAGE_KEY);
+      if (!raw) return;
+      var saved = JSON.parse(raw);
+      if (Date.now() - saved.ts > HISTORY_TTL) {
+        localStorage.removeItem(STORAGE_KEY);
+        return;
+      }
+      history = saved.messages || [];
+      // Replay messages into UI
+      var msgs = document.getElementById("ai-chat-messages");
+      history.forEach(function (m) {
+        var div = document.createElement("div");
+        div.className = "msg " + (m.role === "user" ? "user" : "bot");
+        div.textContent = m.content;
+        msgs.appendChild(div);
+      });
+      msgs.scrollTop = msgs.scrollHeight;
+    } catch (_) {}
+  }
+
+  function clearHistory() {
+    history = [];
+    localStorage.removeItem(STORAGE_KEY);
+    document.getElementById("ai-chat-messages").innerHTML = "";
+    addBotMessage("Hi! 👋 I'm your shopping assistant. Ask me anything about our shoes, sizes, or prices!");
+  }
+
+  // ── Wake up server on page load ───────────────────────────────────────────
+  fetch(CHATBOT_API + "/health").catch(function () {});
+
+  // ── Restore history on load ───────────────────────────────────────────────
+  loadHistory();
 
   // ── Toggle open / close ───────────────────────────────────────────────────
   btn.addEventListener("click", function () {
@@ -120,6 +170,8 @@
     }
     if (isOpen) document.getElementById("ai-chat-input").focus();
   });
+
+  document.getElementById("ai-chat-clear").addEventListener("click", clearHistory);
 
   // ── Send on Enter ─────────────────────────────────────────────────────────
   document.getElementById("ai-chat-input").addEventListener("keydown", function (e) {
@@ -197,6 +249,7 @@
     input.value = "";
     addUserMessage(text);
     history.push({ role: "user", content: text });
+    saveHistory();
 
     isBusy = true;
     send.disabled = true;
@@ -221,6 +274,7 @@
           if (result.done) {
             handleCartAction(typingDiv, accumulated);
             history.push({ role: "assistant", content: accumulated.replace(CART_TOKEN_RE, "").trim() });
+            saveHistory();
             isBusy = false;
             send.disabled = false;
             input.focus();
@@ -281,6 +335,7 @@
               if (result.done) {
                 handleCartAction(typingDiv, accumulated);
                 history.push({ role: "assistant", content: accumulated.replace(CART_TOKEN_RE, "").trim() });
+                saveHistory();
                 isBusy = false; send.disabled = false; input.focus(); return;
               }
               buffer += decoder.decode(result.value, { stream: true });
