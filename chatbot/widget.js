@@ -127,6 +127,45 @@
   });
   document.getElementById("ai-chat-send").addEventListener("click", sendMessage);
 
+  // ── Cart action ───────────────────────────────────────────────────────────
+  var CART_TOKEN_RE = /\[ADD_TO_CART:(\d+):(\d+)\]/;
+
+  function handleCartAction(msgDiv, fullText) {
+    var match = fullText.match(CART_TOKEN_RE);
+    if (!match) return;
+
+    var variantId = parseInt(match[1], 10);
+    var quantity  = parseInt(match[2], 10);
+
+    // Strip the token from displayed text
+    msgDiv.textContent = fullText.replace(CART_TOKEN_RE, "").trim();
+
+    // Add to cart via Shopify AJAX API (same-origin, no auth needed)
+    fetch("/cart/add.js", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ items: [{ id: variantId, quantity: quantity }] }),
+    })
+    .then(function (res) { return res.json(); })
+    .then(function (data) {
+      if (data.items) {
+        var btn = document.createElement("a");
+        btn.href = "/cart";
+        btn.textContent = "🛒 View Cart →";
+        btn.style.cssText = "display:inline-block;margin-top:8px;padding:6px 14px;" +
+          "background:" + ACCENT + ";color:#fff;border-radius:20px;font-size:12px;" +
+          "font-weight:600;text-decoration:none;";
+        msgDiv.appendChild(document.createElement("br"));
+        msgDiv.appendChild(btn);
+      } else {
+        msgDiv.textContent += "\n⚠ Could not add to cart: " + (data.description || "unknown error");
+      }
+    })
+    .catch(function () {
+      msgDiv.textContent += "\n⚠ Could not reach cart. Please add manually.";
+    });
+  }
+
   // ── Helpers ───────────────────────────────────────────────────────────────
   function addBotMessage(text, isTyping) {
     var msgs = document.getElementById("ai-chat-messages");
@@ -180,7 +219,8 @@
       function read() {
         reader.read().then(function (result) {
           if (result.done) {
-            history.push({ role: "assistant", content: accumulated });
+            handleCartAction(typingDiv, accumulated);
+            history.push({ role: "assistant", content: accumulated.replace(CART_TOKEN_RE, "").trim() });
             isBusy = false;
             send.disabled = false;
             input.focus();
@@ -239,7 +279,8 @@
           function read() {
             reader.read().then(function (result) {
               if (result.done) {
-                history.push({ role: "assistant", content: accumulated });
+                handleCartAction(typingDiv, accumulated);
+                history.push({ role: "assistant", content: accumulated.replace(CART_TOKEN_RE, "").trim() });
                 isBusy = false; send.disabled = false; input.focus(); return;
               }
               buffer += decoder.decode(result.value, { stream: true });

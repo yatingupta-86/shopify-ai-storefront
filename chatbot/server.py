@@ -47,15 +47,24 @@ an online footwear store based in India. You help customers with:
 - Size guidance (we use UK sizing: UK 6–11)
 - Pricing information (all prices are in Indian Rupees ₹)
 - Order status and tracking (when order info is provided to you)
-- Product details and comparisons
+- Adding products to the customer's cart
 
 Store URL: https://myaistore-5.myshopify.com
 
-The live product catalogue will be provided to you in [PRODUCT CATALOGUE].
-When order information is provided to you in [ORDER DATA], use it to answer the
-customer's question accurately. Always be warm and helpful.
-Keep responses concise. Always respond in the same language the customer uses
-(English or Hindi)."""
+The live product catalogue (with variant IDs per size) will be in [PRODUCT CATALOGUE].
+When order information is provided to you in [ORDER DATA], use it accurately.
+
+## Adding to Cart
+When a customer asks to add a product to their cart:
+1. Identify the product and size from [PRODUCT CATALOGUE].
+2. If size is not mentioned, ask for it before adding.
+3. Once you have product + size, confirm what you're adding, then end your response
+   with this exact token on its own line: [ADD_TO_CART:VARIANT_ID:QUANTITY]
+   Example: [ADD_TO_CART:51490148745506:1]
+4. Never make up a variant ID — only use IDs from [PRODUCT CATALOGUE].
+
+Always be warm and helpful. Keep responses concise.
+Always respond in the same language the customer uses (English or Hindi)."""
 
 # ── Product catalogue cache (refreshes every 5 minutes) ──────────────────────
 _product_cache: dict = {"data": None, "fetched_at": 0.0}
@@ -86,43 +95,43 @@ def fetch_products() -> list[dict]:
 
 
 def format_products_context(products: list[dict]) -> str:
-    """Convert Shopify product list into a readable catalogue for Groq."""
+    """Convert Shopify product list into a readable catalogue for Groq.
+    Includes variant IDs per size so the AI can trigger cart additions.
+    """
     if not products:
         return "No products currently available."
     lines = []
     for i, p in enumerate(products, 1):
-        # Price range from variants
-        prices = [float(v["price"]) for v in p.get("variants", []) if v.get("price")]
+        variants = p.get("variants", [])
+
+        # Price range
+        prices = [float(v["price"]) for v in variants if v.get("price")]
         if prices:
             lo, hi = min(prices), max(prices)
             price_str = f"₹{lo:,.0f}" if lo == hi else f"₹{lo:,.0f}–₹{hi:,.0f}"
         else:
             price_str = "Price on request"
 
-        # Available sizes from the Size option
-        sizes = []
-        for opt in p.get("options", []):
-            if "size" in opt["name"].lower():
-                sizes = opt["values"]
-        size_str = f"Sizes {', '.join(sizes)}" if sizes else ""
-
-        # Tags for context (running, casual, etc.)
+        # Tags and URL
         tags = p.get("tags", "")
-
-        # Product URL
         handle = p.get("handle", "")
         url = f"https://myaistore-5.myshopify.com/products/{handle}" if handle else ""
 
-        parts = [f"{i}. {p['title']} — {price_str}"]
-        if size_str:
-            parts[0] += f" | {size_str}"
+        header = f"{i}. {p['title']} — {price_str}"
         if tags:
-            parts[0] += f" | Tags: {tags}"
+            header += f" | Tags: {tags}"
         if url:
-            parts.append(f"   Link: {url}")
-        lines.append("\n".join(parts))
+            header += f" | Link: {url}"
 
-    return "\n".join(lines)
+        # Variants with IDs (size → variant_id)
+        variant_lines = []
+        for v in variants:
+            size = v.get("option1") or v.get("title", "")
+            variant_lines.append(f"    {size}: variant_id={v['id']}")
+
+        lines.append(header + "\n  Variants (size → variant_id):\n" + "\n".join(variant_lines))
+
+    return "\n\n".join(lines)
 
 
 # ── Shopify order lookup ──────────────────────────────────────────────────────
