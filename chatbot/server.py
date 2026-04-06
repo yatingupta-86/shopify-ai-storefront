@@ -12,20 +12,32 @@ Run:
 """
 
 import os
+import re
 import json
 from pathlib import Path
 
+import requests as http_requests
 from groq import Groq
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
-GROQ_API_KEY      = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL        = "llama-3.3-70b-versatile"   # free tier, fast, high quality
-SHOPIFY_STORE_URL = "https://myaistore-5.myshopify.com"
-WIDGET_JS_PATH    = Path(__file__).parent / "widget.js"
+GROQ_API_KEY         = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL           = "llama-3.3-70b-versatile"
+SHOPIFY_STORE_URL    = "https://myaistore-5.myshopify.com"
+SHOPIFY_ACCESS_TOKEN = os.environ.get("SHOPIFY_ACCESS_TOKEN", "")
+SHOPIFY_API_VERSION  = os.environ.get("SHOPIFY_API_VERSION", "2026-04")
+SHOPIFY_API_BASE     = f"{SHOPIFY_STORE_URL}/admin/api/{SHOPIFY_API_VERSION}"
+SHOPIFY_HEADERS      = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
+WIDGET_JS_PATH       = Path(__file__).parent / "widget.js"
+
+# Regex to detect order numbers like #1001, order 1001, order no 1001
+ORDER_PATTERN = re.compile(r"(?:order[^\d]*|#)(\d{3,6})", re.IGNORECASE)
 
 SYSTEM_PROMPT = """You are a friendly and helpful AI shopping assistant for myaistore —
 an online footwear store based in India. You help customers with:
@@ -33,6 +45,7 @@ an online footwear store based in India. You help customers with:
 - Product recommendations based on their needs (running, casual, gym, etc.)
 - Size guidance (we use UK sizing: UK 6–11)
 - Pricing information (all prices are in Indian Rupees ₹)
+- Order status and tracking (when order info is provided to you)
 - Product details and comparisons
 
 Our current product catalogue:
@@ -43,43 +56,119 @@ Our current product catalogue:
 
 Store URL: https://myaistore-5.myshopify.com
 
-Keep responses concise, warm, and helpful. If asked something outside footwear or
-shopping, politely redirect the conversation back to the store. Always respond in
-the same language the customer uses (English or Hindi)."""
+When order information is provided to you in [ORDER DATA], use it to answer the
+customer's question accurately. Always be warm and helpful.
+Keep responses concise. Always respond in the same language the customer uses
+(English or Hindi)."""
+
+
+# ── Shopify order lookup ──────────────────────────────────────────────────────
+
+def fetch_order(order_number: str) -> dict | None:
+    """Fetch order from Shopify by order number (e.g. '1001' or '#1001')."""
+    name = f"#{order_number.lstrip('#')}"
+    try:
+        r = http_requests.get(
+            f"{SHOPIFY_API_BASE}/orders.json",
+            headers=SHOPIFY_HEADERS,
+            params={"name": name, "status": "any"},
+            timeout=10,
+        )
+        r.raise_for_status()
+        orders = r.json().get("orders", [])
+        return orders[0] if orders else None
+    except Exception:
+        return None
+
+
+def format_order_context(order: dict) -> str:
+    """Convert Shopify order dict into a readable context string for Groq."""
+    lines = [
+        f"Order Number  : {order.get('name')}",
+        f"Date          : {order.get('created_at', '')[:10]}",
+        f"Payment       : {order.get('financial_status', 'N/A').replace('_', ' ').title()}",
+        f"Fulfillment   : {(order.get('fulfillment_status') or 'pending').replace('_', ' ').title()}",
+        f"Total         : ₹{order.get('total_price', '0')}",
+    ]
+
+    # Line items
+    items = order.get("line_items", [])
+    if items:
+        lines.append("Items:")
+        for item in items:
+            lines.append(f"  - {item['name']} x{item['quantity']} (₹{item['price']})")
+
+    # Tracking
+    fulfillments = order.get("fulfillments", [])
+    if fulfillments:
+        f = fulfillments[0]
+        tracking_num = f.get("tracking_number", "N/A")
+        tracking_url = f.get("tracking_url", "")
+        lines.append(f"Tracking No   : {tracking_num}")
+        if tracking_url:
+            lines.append(f"Tracking URL  : {tracking_url}")
+
+    # Shipping address
+    addr = order.get("shipping_address")
+    if addr:
+        lines.append(f"Shipping To   : {addr.get('city', '')}, {addr.get('province', '')}")
+
+    return "\n".join(lines)
+
 
 # ── App ───────────────────────────────────────────────────────────────────────
 app = FastAPI(title="myaistore Chatbot")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],   # lock down to SHOPIFY_STORE_URL in production
+    allow_origins=["*"],
     allow_methods=["POST", "GET", "OPTIONS"],
     allow_headers=["*"],
 )
 
-client = Groq(api_key=GROQ_API_KEY)
+groq_client = Groq(api_key=GROQ_API_KEY)
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
 class Message(BaseModel):
-    role: str    # "user" or "assistant"
+    role: str
     content: str
 
 class ChatRequest(BaseModel):
-    messages: list[Message]   # full conversation history
+    messages: list[Message]
 
 
 # ── Chat endpoint (streaming SSE) ─────────────────────────────────────────────
 @app.post("/chat")
 async def chat(request: ChatRequest):
-    """Stream Groq's response as Server-Sent Events."""
+    """Stream Groq's response as Server-Sent Events.
+    Automatically detects order numbers and injects live Shopify order data.
+    """
+    # Check latest user message for an order number
+    last_user_msg = next(
+        (m.content for m in reversed(request.messages) if m.role == "user"), ""
+    )
+    order_match = ORDER_PATTERN.search(last_user_msg)
 
-    # Groq uses OpenAI-compatible format: system msg goes in messages list
-    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    # Build messages for Groq
+    system = SYSTEM_PROMPT
+    if order_match:
+        order_number = order_match.group(1)
+        order = fetch_order(order_number)
+        if order:
+            order_context = format_order_context(order)
+            system += f"\n\n[ORDER DATA]\n{order_context}"
+        else:
+            system += (
+                f"\n\n[ORDER DATA]\nNo order found with number #{order_number}. "
+                "Politely inform the customer and ask them to double-check the number."
+            )
+
+    messages = [{"role": "system", "content": system}]
     messages += [{"role": m.role, "content": m.content} for m in request.messages]
 
     def generate():
-        stream = client.chat.completions.create(
+        stream = groq_client.chat.completions.create(
             model=GROQ_MODEL,
             messages=messages,
             max_tokens=1024,
