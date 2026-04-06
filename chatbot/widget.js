@@ -1,6 +1,6 @@
 (function () {
   // ── Config (auto-replaced by inject_widget.py) ──────────────────────────
-  var CHATBOT_API = "https://eleven-mice-search.loca.lt";   // e.g. https://abc123.ngrok.io
+  var CHATBOT_API = "https://shopify-ai-storefront.onrender.com";   // e.g. https://abc123.ngrok.io
   var STORE_NAME  = "myaistore";
   var ACCENT      = "#212121";
   var ACCENT_LITE = "#837E6B";
