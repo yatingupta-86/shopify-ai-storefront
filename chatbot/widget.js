@@ -162,16 +162,13 @@
     isBusy = true;
     send.disabled = true;
 
-    // Typing indicator
-    var typingDiv = addBotMessage("...", true);
+    // Typing indicator — shows "Connecting..." on cold start
+    var typingDiv = addBotMessage("Connecting...", true);
     var accumulated = "";
 
     fetch(CHATBOT_API + "/chat", {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "bypass-tunnel-reminder": "true",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ messages: history }),
     })
     .then(function (res) {
@@ -217,11 +214,51 @@
       read();
     })
     .catch(function (err) {
-      typingDiv.classList.remove("typing");
-      typingDiv.textContent = "Sorry, I'm having trouble connecting. Please try again.";
-      console.error("Chatbot error:", err);
-      isBusy = false;
-      send.disabled = false;
+      // Auto-retry once — handles Render free tier cold start (~30s wake-up)
+      typingDiv.textContent = "Waking up server, retrying...";
+      setTimeout(function () {
+        fetch(CHATBOT_API + "/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: history }),
+        })
+        .then(function (res) {
+          typingDiv.textContent = "...";
+          var reader = res.body.getReader();
+          var decoder = new TextDecoder();
+          var buffer = "";
+          var firstChunk = true;
+          function read() {
+            reader.read().then(function (result) {
+              if (result.done) {
+                history.push({ role: "assistant", content: accumulated });
+                isBusy = false; send.disabled = false; input.focus(); return;
+              }
+              buffer += decoder.decode(result.value, { stream: true });
+              var lines = buffer.split("\n"); buffer = lines.pop();
+              lines.forEach(function (line) {
+                if (!line.startsWith("data: ")) return;
+                var data = line.slice(6).trim();
+                if (data === "[DONE]") return;
+                try {
+                  var chunk = JSON.parse(data).text;
+                  if (firstChunk) { typingDiv.classList.remove("typing"); typingDiv.textContent = ""; firstChunk = false; }
+                  accumulated += chunk;
+                  typingDiv.textContent = accumulated;
+                  document.getElementById("ai-chat-messages").scrollTop = 99999;
+                } catch (_) {}
+              });
+              read();
+            });
+          }
+          read();
+        })
+        .catch(function () {
+          typingDiv.classList.remove("typing");
+          typingDiv.textContent = "Sorry, I'm having trouble connecting. Please try again.";
+          isBusy = false; send.disabled = false;
+        });
+      }, 10000);  // wait 10s then retry
     });
   }
 })();
