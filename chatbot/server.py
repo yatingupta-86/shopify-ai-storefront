@@ -28,19 +28,59 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ── Config ────────────────────────────────────────────────────────────────────
-GROQ_API_KEY         = os.environ.get("GROQ_API_KEY", "")
-GROQ_MODEL           = "llama-3.3-70b-versatile"
-SHOPIFY_STORE_URL    = "https://myaistore-5.myshopify.com"
-SHOPIFY_ACCESS_TOKEN = os.environ.get("SHOPIFY_ACCESS_TOKEN", "")
-SHOPIFY_API_VERSION  = os.environ.get("SHOPIFY_API_VERSION", "2026-04")
-SHOPIFY_API_BASE     = f"{SHOPIFY_STORE_URL}/admin/api/{SHOPIFY_API_VERSION}"
-SHOPIFY_HEADERS      = {"X-Shopify-Access-Token": SHOPIFY_ACCESS_TOKEN}
-WIDGET_JS_PATH       = Path(__file__).parent / "widget.js"
+GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
+GROQ_MODEL            = "llama-3.3-70b-versatile"
+SHOPIFY_STORE_DOMAIN  = os.environ.get("SHOPIFY_STORE_URL", "mera-shelf.myshopify.com")
+SHOPIFY_STORE_URL     = f"https://{SHOPIFY_STORE_DOMAIN}"
+SHOPIFY_CLIENT_ID     = os.environ.get("SHOPIFY_CLIENT_ID", "")
+SHOPIFY_CLIENT_SECRET = os.environ.get("SHOPIFY_CLIENT_SECRET", "")
+SHOPIFY_API_VERSION   = os.environ.get("SHOPIFY_API_VERSION", "2026-04")
+SHOPIFY_API_BASE      = f"{SHOPIFY_STORE_URL}/admin/api/{SHOPIFY_API_VERSION}"
+WIDGET_JS_PATH        = Path(__file__).parent / "widget.js"
+
+# ── Client Credentials Token (Dev Dashboard apps) ────────────────────────────
+_token_cache: dict = {"token": None, "expires_at": 0.0}
+
+def get_shopify_token() -> str:
+    """Fetch a short-lived access token using client credentials grant.
+    Tokens are cached until 60s before expiry.
+    Falls back to SHOPIFY_ACCESS_TOKEN env var if client credentials not set.
+    """
+    # Fall back to static token if no client credentials configured
+    static_token = os.environ.get("SHOPIFY_ACCESS_TOKEN", "")
+    if not SHOPIFY_CLIENT_ID or not SHOPIFY_CLIENT_SECRET:
+        return static_token
+
+    now = time.time()
+    if _token_cache["token"] and now < _token_cache["expires_at"] - 60:
+        return _token_cache["token"]
+
+    try:
+        r = http_requests.post(
+            f"{SHOPIFY_STORE_URL}/admin/oauth/access_token",
+            data={
+                "client_id": SHOPIFY_CLIENT_ID,
+                "client_secret": SHOPIFY_CLIENT_SECRET,
+                "grant_type": "client_credentials",
+            },
+            timeout=10,
+        )
+        r.raise_for_status()
+        data = r.json()
+        _token_cache["token"] = data["access_token"]
+        _token_cache["expires_at"] = now + data.get("expires_in", 3600)
+        return _token_cache["token"]
+    except Exception as e:
+        print(f"[token] failed to fetch token: {e}")
+        return static_token  # fallback
+
+def shopify_headers() -> dict:
+    return {"X-Shopify-Access-Token": get_shopify_token()}
 
 # Regex to detect order numbers like #1001, order 1001, order no 1001
 ORDER_PATTERN = re.compile(r"(?:order[^\d]*|#)(\d{3,6})", re.IGNORECASE)
 
-SYSTEM_PROMPT = """You are a friendly and helpful AI shopping assistant for myaistore —
+SYSTEM_PROMPT = """You are a friendly and helpful AI shopping assistant for Mera Shelf —
 an online footwear store based in India. You help customers with:
 
 - Product recommendations based on their needs (running, casual, gym, etc.)
@@ -49,7 +89,7 @@ an online footwear store based in India. You help customers with:
 - Order status and tracking (when order info is provided to you)
 - Adding products to the customer's cart
 
-Store URL: https://myaistore-5.myshopify.com
+Store URL: https://mera-shelf.myshopify.com
 
 The live product catalogue (with variant IDs per size) will be in [PRODUCT CATALOGUE].
 When order information is provided to you in [ORDER DATA], use it accurately.
@@ -81,7 +121,7 @@ def fetch_products() -> list[dict]:
     try:
         r = http_requests.get(
             f"{SHOPIFY_API_BASE}/products.json",
-            headers=SHOPIFY_HEADERS,
+            headers=shopify_headers(),
             params={"status": "active", "limit": 250, "fields": "id,title,product_type,tags,variants,options,handle"},
             timeout=10,
         )
@@ -115,7 +155,7 @@ def format_products_context(products: list[dict]) -> str:
         # Tags and URL
         tags = p.get("tags", "")
         handle = p.get("handle", "")
-        url = f"https://myaistore-5.myshopify.com/products/{handle}" if handle else ""
+        url = f"{SHOPIFY_STORE_URL}/products/{handle}" if handle else ""
 
         header = f"{i}. {p['title']} — {price_str}"
         if tags:
@@ -142,7 +182,7 @@ def fetch_order(order_number: str) -> dict | None:
     try:
         r = http_requests.get(
             f"{SHOPIFY_API_BASE}/orders.json",
-            headers=SHOPIFY_HEADERS,
+            headers=shopify_headers(),
             params={"name": name, "status": "any"},
             timeout=10,
         )
@@ -189,7 +229,7 @@ def format_order_context(order: dict) -> str:
 
 
 # ── App ───────────────────────────────────────────────────────────────────────
-app = FastAPI(title="myaistore Chatbot")
+app = FastAPI(title="Mera Shelf Chatbot")
 
 app.add_middleware(
     CORSMiddleware,

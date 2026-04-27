@@ -1,7 +1,7 @@
 (function () {
   // ── Config (auto-replaced by inject_widget.py) ──────────────────────────
   var CHATBOT_API = "https://shopify-ai-storefront.onrender.com";   // e.g. https://abc123.ngrok.io
-  var STORE_NAME  = "myaistore";
+  var STORE_NAME  = "Mera Shelf";
   var ACCENT      = "#212121";
   var ACCENT_LITE = "#837E6B";
 
