@@ -1,8 +1,9 @@
-# Shopify AI Storefront Builder
+# Shopify AI Storefront
 
-Analyzes a reference site's public design (colors, fonts, nav structure) and builds a new, original Shopify store inspired by it.
+Two AI-powered features for a Shopify store:
 
-> **Important:** This tool only reads publicly visible HTML/CSS. It does **not** copy copyrighted images, product copy, or brand assets. You must supply your own products and content.
+1. **Customer Chat Widget** — a floating chat button on the storefront. Customers ask questions and get AI answers (product info, order status, add-to-cart).
+2. **Product Enrichment Agent** — when a new product is created in Shopify Admin, an AI agent analyzes the image, writes a description, suggests a title/price/tags, and either auto-publishes it or queues it for human review.
 
 ## Setup
 
@@ -10,77 +11,71 @@ Analyzes a reference site's public design (colors, fonts, nav structure) and bui
 pip install -r requirements.txt
 ```
 
-Edit `config.py` and set:
-- `SHOPIFY_STORE_URL` — your store's `.myshopify.com` domain
-- `SHOPIFY_ACCESS_TOKEN` — from Shopify Admin → Apps → Develop apps
-- `TARGET_SITE_URL` — the site to use as design inspiration
+Copy `.env.example` to `.env` and fill in your values.
 
-## Shopify API Scopes Required
-Create a Custom App in your store and grant these scopes:
-- `write_products`
-- `write_content`
-- `write_themes`
+## Shopify App Requirements
 
-## Usage
+Create a Custom App in Shopify Admin → Apps → Develop apps and grant these scopes:
+- `read_products`, `write_products`
+- `read_orders`
+- `write_script_tags`
+
+## Running locally
 
 ```bash
-# Full pipeline (analyze → build store → upload theme → import products)
-python main.py
-
-# Individual steps
-python main.py --step analyze     # Scrape reference site, save tokens to output/
-python main.py --step store       # Create collections, pages, menus in Shopify
-python main.py --step theme       # Build + upload Dawn-based theme
-python main.py --step products    # Import products (from products.json or samples)
+uvicorn chatbot.server:app --reload
 ```
 
-## Pipeline
+## One-time setup scripts
 
-```
-1. SiteAnalyzer     → scrapes HTML/CSS → output/site_analysis.json
-2. ThemeExtractor   → maps to design tokens → output/theme_design_tokens.json
-3. StoreBuilder     → creates Shopify collections, pages, menus via API
-4. ThemeBuilder     → patches Dawn theme with your colors/fonts, uploads to Shopify
-5. ProductImporter  → imports your products.json (or sample placeholders)
-```
+```bash
+# Install the chat widget on your Shopify storefront
+python chatbot/inject_widget.py
 
-## Adding your products
-
-Create `products.json` in the project root:
-
-```json
-[
-  {
-    "title": "My Product",
-    "vendor": "Your Brand",
-    "product_type": "Footwear",
-    "body_html": "<p>Description here.</p>",
-    "tags": "tag1, tag2",
-    "variants": [
-      {"option1": "Size 8", "price": "95.00", "sku": "SKU-001", "inventory_quantity": 20}
-    ],
-    "options": [{"name": "Size", "values": ["Size 8"]}],
-    "images": [{"src": "https://your-cdn.com/image.jpg", "alt": "Product image"}]
-  }
-]
+# Register the product-created webhook with Shopify
+python agent/register_webhook.py
 ```
 
 ## Project Structure
 
 ```
 shopify-ai-storefront/
-├── config.py                    # Credentials and settings
-├── main.py                      # Orchestration entry point
+├── chatbot/
+│   ├── server.py           # FastAPI server — handles chat + webhooks
+│   ├── widget.js           # Chat bubble UI (runs in customer's browser)
+│   └── inject_widget.py    # One-time script to install widget on Shopify
+├── agent/
+│   ├── agent.py            # AI product enrichment agent (Claude + tool use)
+│   └── register_webhook.py # One-time script to register Shopify webhook
+├── config.py               # Reads secrets from .env
 ├── requirements.txt
-├── scraper/
-│   ├── site_analyzer.py         # Scrape reference site structure
-│   └── theme_extractor.py       # Convert to Shopify design tokens
-├── shopify/
-│   ├── store_builder.py         # Create collections, pages, menus
-│   ├── theme_builder.py         # Build and upload Dawn theme
-│   └── product_importer.py      # Import product catalog
-└── output/                      # Generated files (gitignored)
-    ├── site_analysis.json
-    ├── theme_design_tokens.json
-    └── theme/                   # Patched Dawn theme ready to upload
+└── Procfile                # Render deployment config
 ```
+
+## Environment Variables
+
+| Variable | Purpose |
+|---|---|
+| `SHOPIFY_STORE_URL` | Your `.myshopify.com` domain |
+| `SHOPIFY_CLIENT_ID` | Dev app client ID |
+| `SHOPIFY_CLIENT_SECRET` | Dev app secret (also used for webhook HMAC verification) |
+| `SHOPIFY_ACCESS_TOKEN` | Admin API access token |
+| `SHOPIFY_API_VERSION` | Shopify API version (default: `2026-04`) |
+| `GROQ_API_KEY` | Groq API key for chat responses |
+| `ANTHROPIC_API_KEY` | Anthropic API key for product image analysis |
+
+## API Endpoints
+
+| Method | URL | Purpose |
+|---|---|---|
+| `POST` | `/chat` | Customer chat (streamed via SSE) |
+| `GET` | `/widget.js` | Serves the chat widget JS to Shopify |
+| `POST` | `/webhooks/product-created` | Triggers agent on new product |
+| `GET` | `/review-queue/ui` | Human review dashboard |
+| `POST` | `/review-queue/{id}/approve` | Approve + publish a product |
+| `POST` | `/review-queue/{id}/reject` | Reject a product |
+| `GET` | `/health` | Health check |
+
+## Deployment
+
+Deployed on [Render](https://render.com) via `Procfile`. Set all environment variables in Render's dashboard.
