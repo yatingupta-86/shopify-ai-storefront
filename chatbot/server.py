@@ -464,6 +464,15 @@ async def approve_review(review_id: str, request: Request):
     if not r.ok:
         raise HTTPException(status_code=500, detail=f"Shopify update failed: {r.text}")
 
+    # Assign to collection if selected
+    if edits and edits.get("collection_id"):
+        http_requests.post(
+            f"{SHOPIFY_API_BASE}/collects.json",
+            headers={**shopify_headers(), "Content-Type": "application/json"},
+            json={"collect": {"product_id": item["product_id"], "collection_id": int(edits["collection_id"])}},
+            timeout=10,
+        )
+
     review_queue[review_id]["status"] = "approved"
     return {"status": "approved", "product_id": item["product_id"]}
 
@@ -487,6 +496,13 @@ async def review_queue_ui(token: str = ""):
     pending = [v for v in review_queue.values() if v["status"] == "pending"]
     if not pending:
         return HTMLResponse("<h2 style='font-family:Arial;padding:40px'>✅ No products pending review.</h2>")
+
+    # Fetch live collections for dropdown
+    from agent.agent import fetch_collections as _fetch_collections
+    collections = _fetch_collections(SHOPIFY_API_BASE, shopify_headers())
+    collection_options = "".join(
+        f"<option value='{c['id']}'>{c['title']}</option>" for c in collections
+    )
 
     inp = "input style='width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box'"
     ta  = "textarea style='width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box;resize:vertical'"
@@ -518,6 +534,15 @@ async def review_queue_ui(token: str = ""):
                     <{inp} id="price-{item['review_id']}" type="number" value="{price}">
                 </div>
             </div>
+            <div style="margin-top:12px">
+                <label style="font-size:13px;font-weight:600">Collection / Category</label>
+                <select id="collection-{item['review_id']}"
+                    style="width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box">
+                    <option value="">— No collection —</option>
+                    {collection_options}
+                </select>
+                <p style="font-size:11px;color:#888;margin:4px 0 0">AI suggested: <b>{e.get('category','')}</b> (confidence: {e.get('category_confidence',0):.0%})</p>
+            </div>
             <div style="display:flex;gap:12px;margin-top:16px">
                 <button onclick="approve('{item['review_id']}')"
                     style="background:#2e7d32;color:#fff;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600">
@@ -541,13 +566,14 @@ async def review_queue_ui(token: str = ""):
 const TOKEN = new URLSearchParams(location.search).get('token') || '';
 
 async function approve(id) {{
-    const desc  = document.getElementById('desc-'  + id).value;
-    const tags  = document.getElementById('tags-'  + id).value;
-    const price = document.getElementById('price-' + id).value;
+    const desc        = document.getElementById('desc-'       + id).value;
+    const tags        = document.getElementById('tags-'       + id).value;
+    const price       = document.getElementById('price-'      + id).value;
+    const collection  = document.getElementById('collection-' + id).value;
     const r = await fetch('/review-queue/' + id + '/approve', {{
         method: 'POST',
         headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{description: desc, tags: tags, price: parseFloat(price)}})
+        body: JSON.stringify({{description: desc, tags: tags, price: parseFloat(price), collection_id: collection || null}})
     }});
     const d = await r.json();
     if (r.ok) {{ alert('✅ Product approved and published!'); location.reload(); }}
