@@ -115,6 +115,10 @@ AGENT_TOOLS = [
         "input_schema": {
             "type": "object",
             "properties": {
+                "title": {
+                    "type": "string",
+                    "description": "Improved product title if the seller's title is vague or generic. Keep it concise (5-10 words), specific, and SEO-friendly. If the original title is already good, return it as-is.",
+                },
                 "description": {
                     "type": "string",
                     "description": "Compelling product description in 2-4 sentences. Highlight key features, material, and use-case.",
@@ -157,7 +161,7 @@ AGENT_TOOLS = [
                 },
             },
             "required": [
-                "description", "category", "category_confidence", "tags",
+                "title", "description", "category", "category_confidence", "tags",
                 "suggested_price", "price_confidence", "image_quality",
                 "policy_check", "review_reasons",
             ],

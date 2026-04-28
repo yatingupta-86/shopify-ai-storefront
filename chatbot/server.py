@@ -355,6 +355,7 @@ def enrich_product_background(product: dict):
         updates = {
             "product": {
                 "id": product_id,
+                "title": enrichment.get("title", title),
                 "body_html": enrichment["description"],
                 "tags": ", ".join(enrichment.get("tags", [])),
             }
@@ -445,6 +446,8 @@ async def approve_review(review_id: str, request: Request):
 
     # Apply any seller edits
     if edits:
+        if "title" in edits and edits["title"]:
+            updates["product"]["title"] = edits["title"]
         if "description" in edits:
             updates["product"]["body_html"] = edits["description"]
         if "price" in edits:
@@ -522,6 +525,9 @@ async def review_queue_ui(token: str = ""):
             <ul style="margin:0 0 16px;padding-left:20px">{reasons_html}</ul>
             <hr style="margin:16px 0">
             <h3 style="margin:0 0 12px">Edit &amp; Approve</h3>
+            <label style="font-size:13px;font-weight:600">Title</label>
+            <{inp} id="title-{item['review_id']}" value="{e.get('title', item['title']).replace(chr(34), '&quot;')}">
+            <p style="font-size:11px;color:#888;margin:2px 0 10px">Original: <b>{item['title']}</b></p>
             <label style="font-size:13px;font-weight:600">Description</label>
             <{ta} id="desc-{item['review_id']}" rows="4">{e.get('description','')}</{ta.split()[0]}>
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
@@ -566,6 +572,7 @@ async def review_queue_ui(token: str = ""):
 const TOKEN = new URLSearchParams(location.search).get('token') || '';
 
 async function approve(id) {{
+    const title       = document.getElementById('title-'      + id).value;
     const desc        = document.getElementById('desc-'       + id).value;
     const tags        = document.getElementById('tags-'       + id).value;
     const price       = document.getElementById('price-'      + id).value;
@@ -573,7 +580,7 @@ async function approve(id) {{
     const r = await fetch('/review-queue/' + id + '/approve', {{
         method: 'POST',
         headers: {{'Content-Type': 'application/json'}},
-        body: JSON.stringify({{description: desc, tags: tags, price: parseFloat(price), collection_id: collection || null}})
+        body: JSON.stringify({{title: title, description: desc, tags: tags, price: parseFloat(price), collection_id: collection || null}})
     }});
     const d = await r.json();
     if (r.ok) {{ alert('✅ Product approved and published!'); location.reload(); }}
