@@ -15,13 +15,17 @@ import os
 import re
 import json
 import time
+import hmac
+import hashlib
+import uuid
 from pathlib import Path
+from typing import Optional
 
 import requests as http_requests
 from groq import Groq
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse, FileResponse
+from fastapi.responses import StreamingResponse, FileResponse, HTMLResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -240,6 +244,10 @@ app.add_middleware(
 
 groq_client = Groq(api_key=GROQ_API_KEY)
 
+# ── Review queue (in-memory) ──────────────────────────────────────────────────
+# { review_id: { product_id, title, enrichment, reasons, status, created_at } }
+review_queue: dict = {}
+
 
 # ── Request / Response models ─────────────────────────────────────────────────
 class Message(BaseModel):
@@ -309,6 +317,197 @@ async def chat(request: ChatRequest):
 @app.get("/widget.js")
 async def serve_widget():
     return FileResponse(WIDGET_JS_PATH, media_type="application/javascript")
+
+
+# ── Product enrichment agent (background task) ────────────────────────────────
+
+def enrich_product_background(product: dict):
+    """Runs agent, then auto-publishes or queues for review."""
+    from chatbot.agent import run_product_agent, evaluate_confidence, fetch_price_history
+
+    product_id = product.get("id")
+    title = product.get("title", "Untitled")
+    print(f"[agent] Starting enrichment for product '{title}' (id={product_id})")
+
+    try:
+        enrichment = run_product_agent(product, SHOPIFY_API_BASE, shopify_headers)
+        if not enrichment:
+            print(f"[agent] No enrichment returned for product {product_id}")
+            return
+
+        price_history = fetch_price_history(SHOPIFY_API_BASE, shopify_headers())
+        auto_publish, reasons = evaluate_confidence(enrichment, price_history)
+
+        updates = {
+            "product": {
+                "id": product_id,
+                "body_html": enrichment["description"],
+                "tags": ", ".join(enrichment.get("tags", [])),
+            }
+        }
+        # Set price on first variant if not already set
+        variants = product.get("variants", [])
+        if variants and (not variants[0].get("price") or float(variants[0].get("price", 0)) == 0):
+            updates["product"]["variants"] = [
+                {"id": variants[0]["id"], "price": str(enrichment["suggested_price"])}
+            ]
+
+        if auto_publish:
+            # Apply enrichment and publish directly
+            updates["product"]["status"] = "active"
+            r = http_requests.put(
+                f"{SHOPIFY_API_BASE}/products/{product_id}.json",
+                headers=shopify_headers(),
+                json=updates,
+                timeout=10,
+            )
+            if r.ok:
+                print(f"[agent] ✅ Auto-published product '{title}' with enrichment")
+            else:
+                print(f"[agent] ❌ Failed to update product: {r.text}")
+        else:
+            # Queue for seller review — keep product as draft
+            review_id = str(uuid.uuid4())[:8]
+            review_queue[review_id] = {
+                "review_id": review_id,
+                "product_id": product_id,
+                "title": title,
+                "enrichment": enrichment,
+                "reasons": reasons,
+                "updates": updates,
+                "status": "pending",
+                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            }
+            print(f"[agent] ⚠️  Queued for review (id={review_id}): {reasons}")
+
+    except Exception as e:
+        print(f"[agent] Error during enrichment: {e}")
+
+
+# ── Shopify webhook: product created ──────────────────────────────────────────
+
+@app.post("/webhooks/product-created")
+async def webhook_product_created(request: Request, background_tasks: BackgroundTasks):
+    """Shopify calls this when a new product is created."""
+    body = await request.body()
+
+    # Verify HMAC signature
+    shopify_secret = SHOPIFY_CLIENT_SECRET.encode("utf-8")
+    hmac_header = request.headers.get("X-Shopify-Hmac-Sha256", "")
+    computed = hmac.new(shopify_secret, body, hashlib.sha256).digest()
+    import base64
+    computed_b64 = base64.b64encode(computed).decode("utf-8")
+    if not hmac.compare_digest(computed_b64, hmac_header):
+        raise HTTPException(status_code=401, detail="Invalid webhook signature")
+
+    product = json.loads(body)
+    background_tasks.add_task(enrich_product_background, product)
+    return {"status": "accepted"}
+
+
+# ── Review queue endpoints ────────────────────────────────────────────────────
+
+@app.get("/review-queue")
+async def get_review_queue():
+    """List all products pending seller review."""
+    pending = [v for v in review_queue.values() if v["status"] == "pending"]
+    return {"count": len(pending), "items": pending}
+
+
+@app.post("/review-queue/{review_id}/approve")
+async def approve_review(review_id: str, edits: Optional[dict] = None):
+    """Seller approves a queued product, optionally with edits."""
+    if review_id not in review_queue:
+        raise HTTPException(status_code=404, detail="Review item not found")
+
+    item = review_queue[review_id]
+    updates = item["updates"]
+
+    # Apply any seller edits
+    if edits:
+        if "description" in edits:
+            updates["product"]["body_html"] = edits["description"]
+        if "price" in edits:
+            variants = updates["product"].get("variants", [])
+            if variants:
+                variants[0]["price"] = str(edits["price"])
+        if "tags" in edits:
+            updates["product"]["tags"] = edits["tags"]
+
+    updates["product"]["status"] = "active"
+    r = http_requests.put(
+        f"{SHOPIFY_API_BASE}/products/{item['product_id']}.json",
+        headers=shopify_headers(),
+        json=updates,
+        timeout=10,
+    )
+    if not r.ok:
+        raise HTTPException(status_code=500, detail=f"Shopify update failed: {r.text}")
+
+    review_queue[review_id]["status"] = "approved"
+    return {"status": "approved", "product_id": item["product_id"]}
+
+
+@app.post("/review-queue/{review_id}/reject")
+async def reject_review(review_id: str):
+    """Seller rejects — product stays as draft in Shopify."""
+    if review_id not in review_queue:
+        raise HTTPException(status_code=404, detail="Review item not found")
+    review_queue[review_id]["status"] = "rejected"
+    return {"status": "rejected"}
+
+
+@app.get("/review-queue/ui", response_class=HTMLResponse)
+async def review_queue_ui():
+    """Simple HTML UI for seller to review queued products."""
+    pending = [v for v in review_queue.values() if v["status"] == "pending"]
+    if not pending:
+        return HTMLResponse("<h2 style='font-family:Arial;padding:40px'>✅ No products pending review.</h2>")
+
+    cards = ""
+    for item in pending:
+        e = item["enrichment"]
+        reasons_html = "".join(f"<li>⚠️ {r}</li>" for r in item["reasons"])
+        tags_str = ", ".join(e.get("tags", []))
+        cards += f"""
+        <div style="border:1px solid #ddd;border-radius:12px;padding:24px;margin:16px 0;font-family:Arial">
+            <h2 style="margin:0 0 8px">{item['title']}</h2>
+            <p style="color:#888;font-size:13px">Review ID: {item['review_id']} · Created: {item['created_at']}</p>
+            <hr>
+            <h3>AI Generated Content</h3>
+            <p><b>Description:</b> {e.get('description','')}</p>
+            <p><b>Category:</b> {e.get('category','')} <span style="color:#888">(confidence: {e.get('category_confidence',0):.0%})</span></p>
+            <p><b>Tags:</b> {tags_str}</p>
+            <p><b>Suggested Price:</b> ₹{e.get('suggested_price',0):,.0f}</p>
+            <p><b>Image Quality:</b> {e.get('image_quality','')}</p>
+            <h3 style="color:#d32f2f">Why Review is Needed</h3>
+            <ul>{reasons_html}</ul>
+            <div style="display:flex;gap:12px;margin-top:16px">
+                <button onclick="action('{item['review_id']}','approve')"
+                    style="background:#2e7d32;color:#fff;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px">
+                    ✅ Approve &amp; Publish
+                </button>
+                <button onclick="action('{item['review_id']}','reject')"
+                    style="background:#c62828;color:#fff;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px">
+                    ❌ Reject
+                </button>
+            </div>
+        </div>"""
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html><head><title>Product Review Queue</title></head>
+<body style="max-width:700px;margin:40px auto;padding:0 20px">
+<h1 style="font-family:Arial">🔍 Product Review Queue ({len(pending)} pending)</h1>
+{cards}
+<script>
+async function action(id, type) {{
+    const r = await fetch('/review-queue/' + id + '/' + type, {{method:'POST'}});
+    const d = await r.json();
+    alert(type === 'approve' ? '✅ Product approved and published!' : '❌ Product rejected.');
+    location.reload();
+}}
+</script>
+</body></html>""")
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
