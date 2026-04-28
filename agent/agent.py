@@ -216,9 +216,9 @@ Rules:
                     "type": "image",
                     "source": {"type": "base64", "media_type": media_type, "data": img_b64},
                 })
-                print(f"[agent] Image loaded: {image_url[:60]}...")
+                print(f"[agent] Image loaded: {image_url[:60]}...", flush=True)
             except Exception as e:
-                print(f"[agent] Could not load image: {e}")
+                print(f"[agent] Could not load image: {e}", flush=True)
                 content.append({"type": "text", "text": "[Note: Product image could not be loaded. Assess based on title only.]"})
     else:
         content.append({"type": "text", "text": "[Note: No product image provided. Assess based on title only.]"})
@@ -252,7 +252,7 @@ Rules:
             headers = get_headers_fn()
             name = block.name
             inp = block.input
-            print(f"[agent] Tool call: {name}({inp})")
+            print(f"[agent] Tool call: {name}({inp})", flush=True)
 
             if name == "fetch_collections":
                 result = fetch_collections(api_base, headers)

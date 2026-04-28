@@ -335,18 +335,18 @@ def enrich_product_background(product: dict):
     try:
         from agent.agent import run_product_agent, evaluate_confidence, fetch_price_history
     except Exception as e:
-        print(f"[agent] ❌ Import error: {e}")
+        print(f"[agent] ❌ Import error: {e}", flush=True)
         traceback.print_exc()
         return
 
     product_id = product.get("id")
     title = product.get("title", "Untitled")
-    print(f"[agent] Starting enrichment for product '{title}' (id={product_id})")
+    print(f"[agent] Starting enrichment for product '{title}' (id={product_id})", flush=True)
 
     try:
         enrichment = run_product_agent(product, SHOPIFY_API_BASE, shopify_headers)
         if not enrichment:
-            print(f"[agent] No enrichment returned for product {product_id}")
+            print(f"[agent] No enrichment returned for product {product_id}", flush=True)
             return
 
         price_history = fetch_price_history(SHOPIFY_API_BASE, shopify_headers())
