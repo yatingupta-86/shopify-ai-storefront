@@ -323,7 +323,21 @@ async def serve_widget():
 
 def enrich_product_background(product: dict):
     """Runs agent, then auto-publishes or queues for review."""
-    from agent.agent import run_product_agent, evaluate_confidence, fetch_price_history
+    import traceback
+    import sys
+    import os
+
+    # Ensure project root is on path so agent module is found
+    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    if root not in sys.path:
+        sys.path.insert(0, root)
+
+    try:
+        from agent.agent import run_product_agent, evaluate_confidence, fetch_price_history
+    except Exception as e:
+        print(f"[agent] ❌ Import error: {e}")
+        traceback.print_exc()
+        return
 
     product_id = product.get("id")
     title = product.get("title", "Untitled")
@@ -381,7 +395,8 @@ def enrich_product_background(product: dict):
             print(f"[agent] ⚠️  Queued for review (id={review_id}): {reasons}")
 
     except Exception as e:
-        print(f"[agent] Error during enrichment: {e}")
+        print(f"[agent] ❌ Error during enrichment: {e}")
+        traceback.print_exc()
 
 
 # ── Shopify webhook: product created ──────────────────────────────────────────
