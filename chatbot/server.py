@@ -323,7 +323,7 @@ async def serve_widget():
 
 def enrich_product_background(product: dict):
     """Runs agent, then auto-publishes or queues for review."""
-    from chatbot.agent import run_product_agent, evaluate_confidence, fetch_price_history
+    from agent.agent import run_product_agent, evaluate_confidence, fetch_price_history
 
     product_id = product.get("id")
     title = product.get("title", "Untitled")

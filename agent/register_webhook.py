@@ -2,11 +2,11 @@
 One-time script to register the product-created webhook with Shopify.
 
 Usage:
-    python -m chatbot.register_webhook
+    python -m agent.register_webhook
 """
 
 import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import requests
 from config import SHOPIFY_STORE_URL, SHOPIFY_CLIENT_ID, SHOPIFY_CLIENT_SECRET, SHOPIFY_API_VERSION
