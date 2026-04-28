@@ -457,9 +457,13 @@ async def reject_review(review_id: str):
     return {"status": "rejected"}
 
 
+ADMIN_TOKEN = os.environ.get("ADMIN_TOKEN", "")
+
 @app.get("/review-queue/ui", response_class=HTMLResponse)
-async def review_queue_ui():
+async def review_queue_ui(token: str = ""):
     """Simple HTML UI for seller to review queued products."""
+    if not ADMIN_TOKEN or token != ADMIN_TOKEN:
+        return HTMLResponse("<h2 style='font-family:Arial;padding:40px'>401 Unauthorized</h2>", status_code=401)
     pending = [v for v in review_queue.values() if v["status"] == "pending"]
     if not pending:
         return HTMLResponse("<h2 style='font-family:Arial;padding:40px'>✅ No products pending review.</h2>")
