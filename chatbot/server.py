@@ -430,7 +430,12 @@ async def get_review_queue():
 
 
 @app.post("/review-queue/{review_id}/approve")
-async def approve_review(review_id: str, edits: Optional[dict] = None):
+async def approve_review(review_id: str, request: Request):
+    edits = None
+    try:
+        edits = await request.json()
+    except Exception:
+        pass
     """Seller approves a queued product, optionally with edits."""
     if review_id not in review_queue:
         raise HTTPException(status_code=404, detail="Review item not found")
@@ -483,47 +488,76 @@ async def review_queue_ui(token: str = ""):
     if not pending:
         return HTMLResponse("<h2 style='font-family:Arial;padding:40px'>✅ No products pending review.</h2>")
 
+    inp = "input style='width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box'"
+    ta  = "textarea style='width:100%;padding:8px;border:1px solid #ddd;border-radius:6px;font-size:13px;box-sizing:border-box;resize:vertical'"
+
     cards = ""
     for item in pending:
         e = item["enrichment"]
         reasons_html = "".join(f"<li>⚠️ {r}</li>" for r in item["reasons"])
         tags_str = ", ".join(e.get("tags", []))
+        desc = e.get("description", "").replace('"', "&quot;")
+        price = e.get("suggested_price", 0)
         cards += f"""
         <div style="border:1px solid #ddd;border-radius:12px;padding:24px;margin:16px 0;font-family:Arial">
-            <h2 style="margin:0 0 8px">{item['title']}</h2>
-            <p style="color:#888;font-size:13px">Review ID: {item['review_id']} · Created: {item['created_at']}</p>
-            <hr>
-            <h3>AI Generated Content</h3>
-            <p><b>Description:</b> {e.get('description','')}</p>
-            <p><b>Category:</b> {e.get('category','')} <span style="color:#888">(confidence: {e.get('category_confidence',0):.0%})</span></p>
-            <p><b>Tags:</b> {tags_str}</p>
-            <p><b>Suggested Price:</b> ₹{e.get('suggested_price',0):,.0f}</p>
-            <p><b>Image Quality:</b> {e.get('image_quality','')}</p>
-            <h3 style="color:#d32f2f">Why Review is Needed</h3>
-            <ul>{reasons_html}</ul>
+            <h2 style="margin:0 0 4px">{item['title']}</h2>
+            <p style="color:#888;font-size:12px;margin:0 0 12px">Review ID: {item['review_id']} · {item['created_at']}</p>
+            <h3 style="color:#d32f2f;margin:0 0 8px">Why Review is Needed</h3>
+            <ul style="margin:0 0 16px;padding-left:20px">{reasons_html}</ul>
+            <hr style="margin:16px 0">
+            <h3 style="margin:0 0 12px">Edit &amp; Approve</h3>
+            <label style="font-size:13px;font-weight:600">Description</label>
+            <{ta} id="desc-{item['review_id']}" rows="4">{e.get('description','')}</{ta.split()[0]}>
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:12px">
+                <div>
+                    <label style="font-size:13px;font-weight:600">Tags (comma separated)</label>
+                    <{inp} id="tags-{item['review_id']}" value="{tags_str}">
+                </div>
+                <div>
+                    <label style="font-size:13px;font-weight:600">Price (₹)</label>
+                    <{inp} id="price-{item['review_id']}" type="number" value="{price}">
+                </div>
+            </div>
             <div style="display:flex;gap:12px;margin-top:16px">
-                <button onclick="action('{item['review_id']}','approve')"
-                    style="background:#2e7d32;color:#fff;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px">
+                <button onclick="approve('{item['review_id']}')"
+                    style="background:#2e7d32;color:#fff;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600">
                     ✅ Approve &amp; Publish
                 </button>
-                <button onclick="action('{item['review_id']}','reject')"
-                    style="background:#c62828;color:#fff;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px">
+                <button onclick="reject('{item['review_id']}')"
+                    style="background:#c62828;color:#fff;border:none;padding:10px 24px;border-radius:8px;cursor:pointer;font-size:14px;font-weight:600">
                     ❌ Reject
                 </button>
             </div>
         </div>"""
 
     return HTMLResponse(f"""<!DOCTYPE html>
-<html><head><title>Product Review Queue</title></head>
-<body style="max-width:700px;margin:40px auto;padding:0 20px">
-<h1 style="font-family:Arial">🔍 Product Review Queue ({len(pending)} pending)</h1>
+<html><head><title>Product Review Queue</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body style="max-width:720px;margin:40px auto;padding:0 20px;font-family:Arial">
+<h1>🔍 Product Review Queue <span style="font-size:16px;color:#888">({len(pending)} pending)</span></h1>
 {cards}
 <script>
-async function action(id, type) {{
-    const r = await fetch('/review-queue/' + id + '/' + type, {{method:'POST'}});
+const TOKEN = new URLSearchParams(location.search).get('token') || '';
+
+async function approve(id) {{
+    const desc  = document.getElementById('desc-'  + id).value;
+    const tags  = document.getElementById('tags-'  + id).value;
+    const price = document.getElementById('price-' + id).value;
+    const r = await fetch('/review-queue/' + id + '/approve', {{
+        method: 'POST',
+        headers: {{'Content-Type': 'application/json'}},
+        body: JSON.stringify({{description: desc, tags: tags, price: parseFloat(price)}})
+    }});
     const d = await r.json();
-    alert(type === 'approve' ? '✅ Product approved and published!' : '❌ Product rejected.');
-    location.reload();
+    if (r.ok) {{ alert('✅ Product approved and published!'); location.reload(); }}
+    else {{ alert('❌ Error: ' + (d.detail || 'Unknown error')); }}
+}}
+
+async function reject(id) {{
+    if (!confirm('Reject this product? It will stay as draft in Shopify.')) return;
+    const r = await fetch('/review-queue/' + id + '/reject', {{method: 'POST'}});
+    if (r.ok) {{ alert('Product rejected.'); location.reload(); }}
 }}
 </script>
 </body></html>""")
