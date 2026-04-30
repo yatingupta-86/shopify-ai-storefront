@@ -1,16 +1,15 @@
 """
-Structured logging + Sentry error tracking for Mera Shelf.
+Structured logging + Sentry error tracking + performance tracing for Mera Shelf.
 
 Usage:
     from observability import get_logger, init_sentry
     log = get_logger(__name__)
-    log.info("product.enriched", product_id=123, auto_publish=True)
+    log.info("product.enriched", extra={"product_id": 123, "auto_publish": True})
 """
 
 import logging
 import os
 import json
-import time
 
 
 class _JsonFormatter(logging.Formatter):
@@ -23,7 +22,6 @@ class _JsonFormatter(logging.Formatter):
             "logger": record.name,
             "event": record.getMessage(),
         }
-        # Merge any extra kwargs passed via log.info("msg", extra={...})
         for key, val in record.__dict__.items():
             if key not in (
                 "name", "msg", "args", "levelname", "levelno", "pathname",
@@ -55,17 +53,22 @@ def init_sentry():
     dsn = os.environ.get("SENTRY_DSN", "")
     if not dsn:
         return
+
     import sentry_sdk
     from sentry_sdk.integrations.fastapi import FastApiIntegration
     from sentry_sdk.integrations.starlette import StarletteIntegration
+    from sentry_sdk.integrations.logging import LoggingIntegration
 
     sentry_sdk.init(
         dsn=dsn,
         integrations=[
             StarletteIntegration(transaction_style="endpoint"),
             FastApiIntegration(transaction_style="endpoint"),
+            # INFO logs → breadcrumbs (visible in error context)
+            # WARNING+ logs → standalone Sentry events (visible in Issues)
+            LoggingIntegration(level=logging.INFO, event_level=logging.WARNING),
         ],
-        traces_sample_rate=0.2,   # capture 20% of requests for performance tracing
-        send_default_pii=False,    # don't send customer PII to Sentry
+        traces_sample_rate=1.0,   # capture 100% of transactions for performance tab
+        send_default_pii=False,
         environment=os.environ.get("ENVIRONMENT", "production"),
     )

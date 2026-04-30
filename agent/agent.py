@@ -24,6 +24,12 @@ if _root not in sys.path:
 from observability import get_logger
 log = get_logger("agent")
 
+
+class _nullspan:
+    """No-op context manager used when Sentry is not available."""
+    def __enter__(self): return None
+    def __exit__(self, *_): pass
+
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
@@ -239,14 +245,24 @@ Rules:
     messages = [{"role": "user", "content": content}]
     enrichment = None
 
+    try:
+        import sentry_sdk
+        _sentry_available = True
+    except ImportError:
+        _sentry_available = False
+
     # Agentic loop — Claude decides what tools to call
-    for _ in range(10):  # max 10 iterations
-        response = claude.messages.create(
-            model="claude-opus-4-6",
-            max_tokens=2048,
-            tools=AGENT_TOOLS,
-            messages=messages,
-        )
+    for iteration in range(10):  # max 10 iterations
+        with (sentry_sdk.start_span(op="claude.api_call", name=f"Claude call #{iteration + 1}") if _sentry_available else _nullspan()) as span:
+            response = claude.messages.create(
+                model="claude-opus-4-6",
+                max_tokens=2048,
+                tools=AGENT_TOOLS,
+                messages=messages,
+            )
+            if _sentry_available and span:
+                span.set_data("input_tokens", response.usage.input_tokens)
+                span.set_data("output_tokens", response.usage.output_tokens)
 
         messages.append({"role": "assistant", "content": response.content})
 
@@ -267,17 +283,18 @@ Rules:
             inp = block.input
             log.info("agent.tool_call", extra={"tool": name, "input": inp})
 
-            if name == "fetch_collections":
-                result = fetch_collections(api_base, headers)
-            elif name == "fetch_similar_products":
-                result = fetch_similar_products(api_base, headers, inp.get("tags", ""))
-            elif name == "fetch_price_history":
-                result = fetch_price_history(api_base, headers)
-            elif name == "submit_enrichment":
-                enrichment = inp
-                result = {"status": "enrichment recorded"}
-            else:
-                result = {"error": f"Unknown tool: {name}"}
+            with (sentry_sdk.start_span(op="agent.tool", name=name) if _sentry_available else _nullspan()):
+                if name == "fetch_collections":
+                    result = fetch_collections(api_base, headers)
+                elif name == "fetch_similar_products":
+                    result = fetch_similar_products(api_base, headers, inp.get("tags", ""))
+                elif name == "fetch_price_history":
+                    result = fetch_price_history(api_base, headers)
+                elif name == "submit_enrichment":
+                    enrichment = inp
+                    result = {"status": "enrichment recorded"}
+                else:
+                    result = {"error": f"Unknown tool: {name}"}
 
             tool_results.append({
                 "type": "tool_result",
