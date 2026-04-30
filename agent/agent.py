@@ -260,6 +260,10 @@ Rules:
 
     messages = [{"role": "user", "content": content}]
     enrichment = None
+    total_input_tokens = 0
+    total_output_tokens = 0
+    tool_calls_made: list[str] = []
+    claude_call_count = 0
 
     try:
         import sentry_sdk
@@ -269,6 +273,7 @@ Rules:
 
     # Agentic loop — Claude decides what tools to call
     for iteration in range(10):  # max 10 iterations
+        claude_call_count += 1
         with (sentry_sdk.start_span(op="claude.api_call", name=f"Claude call #{iteration + 1}") if _sentry_available else _nullspan()) as span:
             response = claude.messages.create(
                 model="claude-opus-4-6",
@@ -276,6 +281,8 @@ Rules:
                 tools=AGENT_TOOLS,
                 messages=messages,
             )
+            total_input_tokens  += response.usage.input_tokens
+            total_output_tokens += response.usage.output_tokens
             if _sentry_available and span:
                 span.set_data("input_tokens", response.usage.input_tokens)
                 span.set_data("output_tokens", response.usage.output_tokens)
@@ -297,6 +304,7 @@ Rules:
             headers = get_headers_fn()
             name = block.name
             inp = block.input
+            tool_calls_made.append(name)
             log.info("agent.tool_call", extra={"tool": name, "input": inp})
 
             with (sentry_sdk.start_span(op="agent.tool", name=name) if _sentry_available else _nullspan()):
@@ -323,7 +331,21 @@ Rules:
         if enrichment:
             break
 
-    return enrichment
+    # Claude Opus 4.6 pricing: $15/1M input, $75/1M output — converted to INR at ₹84
+    cost_usd = (total_input_tokens / 1_000_000 * 15) + (total_output_tokens / 1_000_000 * 75)
+    cost_inr = round(cost_usd * 84, 2)
+
+    usage = {
+        "input_tokens":   total_input_tokens,
+        "output_tokens":  total_output_tokens,
+        "total_tokens":   total_input_tokens + total_output_tokens,
+        "claude_calls":   claude_call_count,
+        "tool_calls":     tool_calls_made,
+        "cost_usd":       round(cost_usd, 4),
+        "cost_inr":       cost_inr,
+    }
+    log.info("agent.usage", extra=usage)
+    return enrichment, usage
 
 
 # ── Confidence gates ──────────────────────────────────────────────────────────

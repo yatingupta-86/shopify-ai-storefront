@@ -258,6 +258,10 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # { review_id: { product_id, title, enrichment, reasons, status, created_at } }
 review_queue: dict = {}
 
+# ── Cost ledger (in-memory) ───────────────────────────────────────────────────
+# List of per-enrichment cost records
+cost_ledger: list = []
+
 
 # ── Request / Response models ─────────────────────────────────────────────────
 class Message(BaseModel):
@@ -348,7 +352,7 @@ def enrich_product_background(product: dict):
     log.info("agent.enrichment_started", extra={"product_id": product_id, "title": title})
 
     try:
-        enrichment = run_product_agent(product, SHOPIFY_API_BASE, shopify_headers)
+        enrichment, usage = run_product_agent(product, SHOPIFY_API_BASE, shopify_headers)
         if not enrichment:
             log.warning("agent.no_enrichment", extra={"product_id": product_id})
             return
@@ -410,6 +414,16 @@ def enrich_product_background(product: dict):
                 "product_id": product_id, "review_id": review_id,
                 "reasons": reasons, "duration_s": round(time.time() - t0, 1),
             })
+
+        # Record to cost ledger
+        cost_ledger.append({
+            "ts":            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+            "product_id":    product_id,
+            "title":         title,
+            "outcome":       "auto_published" if auto_publish else "queued_for_review",
+            "duration_s":    round(time.time() - t0, 1),
+            **usage,
+        })
 
     except Exception as e:
         log.error("agent.enrichment_failed", extra={"product_id": product_id, "error": str(e)})
@@ -616,6 +630,89 @@ async function reject(id) {{
 @app.get("/googled4426b159fb66caa.html", response_class=HTMLResponse)
 async def google_verification():
     return HTMLResponse("google-site-verification: googled4426b159fb66caa.html")
+
+
+# ── Agent cost dashboard ──────────────────────────────────────────────────────
+
+@app.get("/costs", response_class=HTMLResponse)
+async def cost_dashboard(token: str = ""):
+    if not ADMIN_TOKEN or token != ADMIN_TOKEN:
+        return HTMLResponse("<h2 style='font-family:Arial;padding:40px'>401 Unauthorized</h2>", status_code=401)
+
+    total_inr  = sum(r["cost_inr"] for r in cost_ledger)
+    total_usd  = sum(r["cost_usd"] for r in cost_ledger)
+    total_in   = sum(r["input_tokens"] for r in cost_ledger)
+    total_out  = sum(r["output_tokens"] for r in cost_ledger)
+    total_runs = len(cost_ledger)
+    auto_count = sum(1 for r in cost_ledger if r["outcome"] == "auto_published")
+    review_count = total_runs - auto_count
+    avg_cost   = round(total_inr / total_runs, 2) if total_runs else 0
+    avg_dur    = round(sum(r["duration_s"] for r in cost_ledger) / total_runs, 1) if total_runs else 0
+
+    rows = ""
+    for r in reversed(cost_ledger):
+        outcome_color = "#2e7d32" if r["outcome"] == "auto_published" else "#e65100"
+        outcome_label = "✅ Auto-published" if r["outcome"] == "auto_published" else "⚠️ Queued"
+        rows += f"""
+        <tr>
+          <td>{r['ts']}</td>
+          <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"
+              title="{r['title']}">{r['title']}</td>
+          <td style="color:{outcome_color};font-weight:600">{outcome_label}</td>
+          <td>{r['claude_calls']}</td>
+          <td>{', '.join(r['tool_calls'])}</td>
+          <td>{r['input_tokens']:,}</td>
+          <td>{r['output_tokens']:,}</td>
+          <td>{r['duration_s']}s</td>
+          <td style="font-weight:600">₹{r['cost_inr']}</td>
+          <td>${r['cost_usd']}</td>
+        </tr>"""
+
+    if not rows:
+        rows = "<tr><td colspan='10' style='text-align:center;color:#888;padding:32px'>No enrichments run yet.</td></tr>"
+
+    return HTMLResponse(f"""<!DOCTYPE html>
+<html><head>
+<title>Agent Cost Dashboard</title>
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<style>
+  body {{ font-family: Arial, sans-serif; background: #fdf6ec; margin: 0; padding: 24px; color: #3b2007; }}
+  h1 {{ margin: 0 0 24px; font-size: 24px; }}
+  .cards {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 16px; margin-bottom: 32px; }}
+  .card {{ background: #fff; border-radius: 10px; padding: 18px 20px; border-top: 4px solid #97124f; }}
+  .card .val {{ font-size: 28px; font-weight: 700; color: #97124f; }}
+  .card .lbl {{ font-size: 12px; color: #888; margin-top: 4px; }}
+  table {{ width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; font-size: 13px; }}
+  th {{ background: #3b2007; color: #fff; padding: 10px 12px; text-align: left; font-size: 12px; }}
+  td {{ padding: 10px 12px; border-bottom: 1px solid #f0e8d8; }}
+  tr:last-child td {{ border-bottom: none; }}
+  tr:hover td {{ background: #fdf6ec; }}
+</style>
+</head>
+<body>
+<h1>🤖 Agent Cost Dashboard</h1>
+<div class="cards">
+  <div class="card"><div class="val">₹{total_inr:.2f}</div><div class="lbl">Total spend (INR)</div></div>
+  <div class="card"><div class="val">${total_usd:.4f}</div><div class="lbl">Total spend (USD)</div></div>
+  <div class="card"><div class="val">{total_runs}</div><div class="lbl">Total enrichments</div></div>
+  <div class="card"><div class="val">₹{avg_cost}</div><div class="lbl">Avg cost / product</div></div>
+  <div class="card"><div class="val">{avg_dur}s</div><div class="lbl">Avg duration</div></div>
+  <div class="card"><div class="val">{auto_count}</div><div class="lbl">Auto-published</div></div>
+  <div class="card"><div class="val">{review_count}</div><div class="lbl">Sent to review</div></div>
+  <div class="card"><div class="val">{total_in + total_out:,}</div><div class="lbl">Total tokens used</div></div>
+</div>
+<table>
+  <thead><tr>
+    <th>Time</th><th>Product</th><th>Outcome</th><th>Claude Calls</th>
+    <th>Tools Called</th><th>Input Tokens</th><th>Output Tokens</th>
+    <th>Duration</th><th>Cost (₹)</th><th>Cost ($)</th>
+  </tr></thead>
+  <tbody>{rows}</tbody>
+</table>
+<p style="color:#aaa;font-size:11px;margin-top:16px">
+  Pricing: Claude Opus 4.6 — $15/1M input tokens, $75/1M output tokens · ₹84 per USD · Resets on server restart
+</p>
+</body></html>""")
 
 
 # ── Health check ──────────────────────────────────────────────────────────────
