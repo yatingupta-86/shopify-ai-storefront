@@ -41,6 +41,8 @@ from observability import get_logger, init_sentry
 init_sentry()
 log = get_logger("server")
 
+import db as _db
+
 # ── Config ────────────────────────────────────────────────────────────────────
 GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL            = "llama-3.3-70b-versatile"
@@ -258,9 +260,9 @@ groq_client = Groq(api_key=GROQ_API_KEY)
 # { review_id: { product_id, title, enrichment, reasons, status, created_at } }
 review_queue: dict = {}
 
-# ── Cost ledger (in-memory) ───────────────────────────────────────────────────
-# List of per-enrichment cost records
-cost_ledger: list = []
+# ── Cost ledger ───────────────────────────────────────────────────────────────
+# Populated from Supabase on startup; falls back to in-memory if not configured
+cost_ledger: list = _db.load_cost_records()
 
 
 # ── Request / Response models ─────────────────────────────────────────────────
@@ -415,15 +417,17 @@ def enrich_product_background(product: dict):
                 "reasons": reasons, "duration_s": round(time.time() - t0, 1),
             })
 
-        # Record to cost ledger
-        cost_ledger.append({
+        # Record to cost ledger (in-memory + Supabase)
+        record = {
             "ts":            time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "product_id":    product_id,
             "title":         title,
             "outcome":       "auto_published" if auto_publish else "queued_for_review",
             "duration_s":    round(time.time() - t0, 1),
             **usage,
-        })
+        }
+        cost_ledger.append(record)
+        _db.insert_cost_record(record)
 
     except Exception as e:
         log.error("agent.enrichment_failed", extra={"product_id": product_id, "error": str(e)})
@@ -710,7 +714,7 @@ async def cost_dashboard(token: str = ""):
   <tbody>{rows}</tbody>
 </table>
 <p style="color:#aaa;font-size:11px;margin-top:16px">
-  Pricing: Claude Opus 4.6 — $15/1M input tokens, $75/1M output tokens · ₹84 per USD · Resets on server restart
+  Pricing: Claude Opus 4.6 — $15/1M input tokens, $75/1M output tokens · ₹84 per USD · Persisted via Supabase
 </p>
 </body></html>""")
 
