@@ -47,7 +47,7 @@ def _get_client():
     url = os.environ.get("SUPABASE_URL", "")
     key = os.environ.get("SUPABASE_KEY", "")
     if not url or not key:
-        log.info("db.supabase_not_configured", extra={"msg": "Cost ledger will be in-memory only"})
+        log.info("db.supabase_not_configured", extra={"detail": "Cost ledger will be in-memory only"})
         return None
 
     try:
