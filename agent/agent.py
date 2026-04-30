@@ -174,11 +174,24 @@ AGENT_TOOLS = [
                     "items": {"type": "string"},
                     "description": "Specific reasons why a human should review this product. Empty list if confident in auto-publish.",
                 },
+                "seo_title": {
+                    "type": "string",
+                    "description": "SEO page title shown in Google results. Max 60 characters. Format: '<Product Name> | Mera Shelf'. Include the most important keyword first.",
+                },
+                "seo_description": {
+                    "type": "string",
+                    "description": "Meta description shown under the title in Google results. Max 155 characters. Compelling summary with key features and a soft call to action.",
+                },
+                "image_alt_text": {
+                    "type": "string",
+                    "description": "Descriptive alt text for the product image. Max 125 characters. Describe what is visually shown — material, colour, style, use-case. Do not start with 'image of'.",
+                },
             },
             "required": [
                 "title", "description", "category", "category_confidence", "tags",
                 "suggested_price", "price_confidence", "image_quality",
                 "policy_check", "review_reasons",
+                "seo_title", "seo_description", "image_alt_text",
             ],
         },
     },
@@ -217,7 +230,10 @@ Rules:
 - All prices in INR (₹)
 - Only use category names that exist in fetch_collections results
 - Be honest with confidence scores — lower score means seller reviews it
-- If the image is unclear or you see multiple possible categories, reflect that in confidence"""
+- If the image is unclear or you see multiple possible categories, reflect that in confidence
+- seo_title: max 60 chars, format "<Product Name> | Mera Shelf", keyword-first
+- seo_description: max 155 chars, natural language, include key material/use-case
+- image_alt_text: max 125 chars, describe what is visually in the image (material, colour, style)"""
 
     content: list = [{"type": "text", "text": text_content}]
 

@@ -362,12 +362,21 @@ def enrich_product_background(product: dict):
                 "title": enrichment.get("title", title),
                 "body_html": enrichment["description"],
                 "tags": ", ".join(enrichment.get("tags", [])),
+                "metafields_global_title_tag": enrichment.get("seo_title", ""),
+                "metafields_global_description_tag": enrichment.get("seo_description", ""),
             }
         }
         variants = product.get("variants", [])
         if variants and (not variants[0].get("price") or float(variants[0].get("price", 0)) == 0):
             updates["product"]["variants"] = [
                 {"id": variants[0]["id"], "price": str(enrichment["suggested_price"])}
+            ]
+
+        # Set alt text on the first product image
+        images = product.get("images", [])
+        if images and enrichment.get("image_alt_text"):
+            updates["product"]["images"] = [
+                {"id": images[0]["id"], "alt": enrichment["image_alt_text"]}
             ]
 
         if auto_publish:
