@@ -612,6 +612,12 @@ async function reject(id) {{
 </body></html>""")
 
 
+# ── Google Search Console verification ───────────────────────────────────────
+@app.get("/googled4426b159fb66caa.html", response_class=HTMLResponse)
+async def google_verification():
+    return HTMLResponse("google-site-verification: googled4426b159fb66caa.html")
+
+
 # ── Health check ──────────────────────────────────────────────────────────────
 @app.get("/health")
 async def health():
