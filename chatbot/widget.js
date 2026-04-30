@@ -99,7 +99,7 @@
     </div>
     <div id="ai-chat-messages"></div>
     <div id="ai-chat-footer">
-      <input id="ai-chat-input" type="text" placeholder="Ask about our shoes..." />
+      <input id="ai-chat-input" type="text" placeholder="Ask about our handmade items..." />
       <button id="ai-chat-send">Send</button>
     </div>
   `;
@@ -151,7 +151,7 @@
     history = [];
     localStorage.removeItem(STORAGE_KEY);
     document.getElementById("ai-chat-messages").innerHTML = "";
-    addBotMessage("Hi! 👋 I'm your shopping assistant. Ask me anything about our shoes, sizes, or prices!");
+    addBotMessage("Hi! 👋 I'm your shopping assistant. Ask me anything about our handmade items, gifting ideas, or prices!");
   }
 
   // ── Wake up server on page load ───────────────────────────────────────────
@@ -166,7 +166,7 @@
     box.classList.toggle("open", isOpen);
     btn.innerHTML = isOpen ? "✕" : "💬";
     if (isOpen && history.length === 0) {
-      addBotMessage("Hi! 👋 I'm your shopping assistant. Ask me anything about our shoes, sizes, or prices!");
+      addBotMessage("Hi! 👋 I'm your shopping assistant. Ask me anything about our handmade items, gifting ideas, or prices!");
     }
     if (isOpen) document.getElementById("ai-chat-input").focus();
   });
