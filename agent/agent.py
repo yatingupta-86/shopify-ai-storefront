@@ -11,9 +11,18 @@ When a seller uploads a product to Shopify:
 import base64
 import json
 import os
+import sys
 
 import anthropic
 import requests as http_requests
+
+# Ensure project root on path so observability is importable
+_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+
+from observability import get_logger
+log = get_logger("agent")
 
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
@@ -220,9 +229,9 @@ Rules:
                     "type": "image",
                     "source": {"type": "base64", "media_type": media_type, "data": img_b64},
                 })
-                print(f"[agent] Image loaded: {image_url[:60]}...", flush=True)
+                log.info("agent.image_loaded", extra={"url": image_url[:80]})
             except Exception as e:
-                print(f"[agent] Could not load image: {e}", flush=True)
+                log.warning("agent.image_load_failed", extra={"url": image_url[:80], "error": str(e)})
                 content.append({"type": "text", "text": "[Note: Product image could not be loaded. Assess based on title only.]"})
     else:
         content.append({"type": "text", "text": "[Note: No product image provided. Assess based on title only.]"})
@@ -256,7 +265,7 @@ Rules:
             headers = get_headers_fn()
             name = block.name
             inp = block.input
-            print(f"[agent] Tool call: {name}({inp})", flush=True)
+            log.info("agent.tool_call", extra={"tool": name, "input": inp})
 
             if name == "fetch_collections":
                 result = fetch_collections(api_base, headers)

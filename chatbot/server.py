@@ -31,6 +31,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import sys
+import os as _os
+_root = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+if _root not in sys.path:
+    sys.path.insert(0, _root)
+
+from observability import get_logger, init_sentry
+init_sentry()
+log = get_logger("server")
+
 # ── Config ────────────────────────────────────────────────────────────────────
 GROQ_API_KEY          = os.environ.get("GROQ_API_KEY", "")
 GROQ_MODEL            = "llama-3.3-70b-versatile"
@@ -75,7 +85,7 @@ def get_shopify_token() -> str:
         _token_cache["expires_at"] = now + data.get("expires_in", 3600)
         return _token_cache["token"]
     except Exception as e:
-        print(f"[token] failed to fetch token: {e}")
+        log.error("shopify.token_fetch_failed", extra={"error": str(e)})
         return static_token  # fallback
 
 def shopify_headers() -> dict:
@@ -324,29 +334,23 @@ async def serve_widget():
 def enrich_product_background(product: dict):
     """Runs agent, then auto-publishes or queues for review."""
     import traceback
-    import sys
-    import os
-
-    # Ensure project root is on path so agent module is found
-    root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    if root not in sys.path:
-        sys.path.insert(0, root)
 
     try:
         from agent.agent import run_product_agent, evaluate_confidence, fetch_price_history
     except Exception as e:
-        print(f"[agent] ❌ Import error: {e}", flush=True)
+        log.error("agent.import_failed", extra={"error": str(e)})
         traceback.print_exc()
         return
 
     product_id = product.get("id")
     title = product.get("title", "Untitled")
-    print(f"[agent] Starting enrichment for product '{title}' (id={product_id})", flush=True)
+    t0 = time.time()
+    log.info("agent.enrichment_started", extra={"product_id": product_id, "title": title})
 
     try:
         enrichment = run_product_agent(product, SHOPIFY_API_BASE, shopify_headers)
         if not enrichment:
-            print(f"[agent] No enrichment returned for product {product_id}", flush=True)
+            log.warning("agent.no_enrichment", extra={"product_id": product_id})
             return
 
         price_history = fetch_price_history(SHOPIFY_API_BASE, shopify_headers())
@@ -360,7 +364,6 @@ def enrich_product_background(product: dict):
                 "tags": ", ".join(enrichment.get("tags", [])),
             }
         }
-        # Set price on first variant if not already set
         variants = product.get("variants", [])
         if variants and (not variants[0].get("price") or float(variants[0].get("price", 0)) == 0):
             updates["product"]["variants"] = [
@@ -368,7 +371,6 @@ def enrich_product_background(product: dict):
             ]
 
         if auto_publish:
-            # Apply enrichment and publish directly
             updates["product"]["status"] = "active"
             r = http_requests.put(
                 f"{SHOPIFY_API_BASE}/products/{product_id}.json",
@@ -377,11 +379,13 @@ def enrich_product_background(product: dict):
                 timeout=10,
             )
             if r.ok:
-                print(f"[agent] ✅ Auto-published product '{title}' with enrichment")
+                log.info("agent.auto_published", extra={
+                    "product_id": product_id, "title": title,
+                    "duration_s": round(time.time() - t0, 1),
+                })
             else:
-                print(f"[agent] ❌ Failed to update product: {r.text}")
+                log.error("agent.publish_failed", extra={"product_id": product_id, "response": r.text[:200]})
         else:
-            # Queue for seller review — keep product as draft
             review_id = str(uuid.uuid4())[:8]
             review_queue[review_id] = {
                 "review_id": review_id,
@@ -393,10 +397,13 @@ def enrich_product_background(product: dict):
                 "status": "pending",
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
-            print(f"[agent] ⚠️  Queued for review (id={review_id}): {reasons}")
+            log.info("agent.queued_for_review", extra={
+                "product_id": product_id, "review_id": review_id,
+                "reasons": reasons, "duration_s": round(time.time() - t0, 1),
+            })
 
     except Exception as e:
-        print(f"[agent] ❌ Error during enrichment: {e}")
+        log.error("agent.enrichment_failed", extra={"product_id": product_id, "error": str(e)})
         traceback.print_exc()
 
 
