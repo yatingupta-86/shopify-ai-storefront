@@ -29,6 +29,7 @@ Usage:
 """
 
 import os
+import json
 from observability import get_logger
 
 log = get_logger("db")
@@ -71,8 +72,10 @@ def insert_cost_record(record: dict) -> bool:
         return False
 
     try:
-        # tool_calls is a list — Postgres stores it as text[]
-        client.table("enrichment_costs").insert(record).execute()
+        # Serialize tool_calls list to JSON string for plain text column
+        row = dict(record)
+        row["tool_calls"] = json.dumps(row.get("tool_calls", []))
+        client.table("enrichment_costs").insert(row).execute()
         log.info("db.cost_record_saved", extra={"product_id": record.get("product_id")})
         return True
     except Exception as e:
@@ -105,7 +108,7 @@ def load_cost_records() -> list[dict]:
                 "output_tokens": r.get("output_tokens", 0),
                 "total_tokens":  r.get("total_tokens", 0),
                 "claude_calls":  r.get("claude_calls", 0),
-                "tool_calls":    r.get("tool_calls") or [],
+                "tool_calls":    json.loads(r["tool_calls"]) if r.get("tool_calls") else [],
                 "cost_usd":      float(r.get("cost_usd", 0)),
                 "cost_inr":      float(r.get("cost_inr", 0)),
             })
