@@ -33,6 +33,31 @@ class _nullspan:
 ANTHROPIC_API_KEY = os.environ.get("ANTHROPIC_API_KEY", "")
 claude = anthropic.Anthropic(api_key=ANTHROPIC_API_KEY)
 
+# ── Langfuse (lazy init — no-op if keys not set) ──────────────────────────────
+
+_langfuse = None
+
+def _get_langfuse():
+    global _langfuse
+    if _langfuse is not None:
+        return _langfuse
+    pk = os.environ.get("LANGFUSE_PUBLIC_KEY", "")
+    sk = os.environ.get("LANGFUSE_SECRET_KEY", "")
+    if not pk or not sk:
+        return None
+    try:
+        from langfuse import Langfuse
+        _langfuse = Langfuse(
+            public_key=pk,
+            secret_key=sk,
+            host=os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+        )
+        log.info("langfuse.connected")
+    except Exception as e:
+        log.warning("langfuse.init_failed", extra={"error": str(e)})
+    return _langfuse
+
+
 # ── Confidence thresholds ─────────────────────────────────────────────────────
 CATEGORY_CONFIDENCE_THRESHOLD = 0.85
 PRICE_TOLERANCE = 0.20   # allow 20% outside historical range
@@ -271,9 +296,25 @@ Rules:
     except ImportError:
         _sentry_available = False
 
+    # Start Langfuse trace for this enrichment run
+    lf = _get_langfuse()
+    lf_trace = lf.trace(
+        name="product-enrichment",
+        input={"title": title, "product_id": product.get("id")},
+        metadata={"store": api_base},
+    ) if lf else None
+
     # Agentic loop — Claude decides what tools to call
     for iteration in range(10):  # max 10 iterations
         claude_call_count += 1
+
+        # Langfuse: start generation span before the Claude call
+        lf_generation = lf_trace.generation(
+            name=f"claude-call-{iteration + 1}",
+            model="claude-opus-4-6",
+            input=messages,
+        ) if lf_trace else None
+
         with (sentry_sdk.start_span(op="claude.api_call", name=f"Claude call #{iteration + 1}") if _sentry_available else _nullspan()) as span:
             response = claude.messages.create(
                 model="claude-opus-4-6",
@@ -286,6 +327,16 @@ Rules:
             if _sentry_available and span:
                 span.set_data("input_tokens", response.usage.input_tokens)
                 span.set_data("output_tokens", response.usage.output_tokens)
+
+        # Langfuse: close generation with response + token counts
+        if lf_generation:
+            lf_generation.end(
+                output=[b.text if hasattr(b, "text") else b.type for b in response.content],
+                usage={
+                    "input":  response.usage.input_tokens,
+                    "output": response.usage.output_tokens,
+                },
+            )
 
         messages.append({"role": "assistant", "content": response.content})
 
@@ -307,6 +358,9 @@ Rules:
             tool_calls_made.append(name)
             log.info("agent.tool_call", extra={"tool": name, "input": inp})
 
+            # Langfuse: span per tool call
+            lf_span = lf_trace.span(name=name, input=inp) if lf_trace else None
+
             with (sentry_sdk.start_span(op="agent.tool", name=name) if _sentry_available else _nullspan()):
                 if name == "fetch_collections":
                     result = fetch_collections(api_base, headers)
@@ -319,6 +373,9 @@ Rules:
                     result = {"status": "enrichment recorded"}
                 else:
                     result = {"error": f"Unknown tool: {name}"}
+
+            if lf_span:
+                lf_span.end(output=result)
 
             tool_results.append({
                 "type": "tool_result",
@@ -345,6 +402,15 @@ Rules:
         "cost_inr":       cost_inr,
     }
     log.info("agent.usage", extra=usage)
+
+    # Langfuse: close trace with final output and cost metadata
+    if lf_trace:
+        lf_trace.update(
+            output=enrichment,
+            metadata=usage,
+        )
+        lf.flush()
+
     return enrichment, usage
 
 
