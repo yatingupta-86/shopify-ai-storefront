@@ -12,6 +12,8 @@ import base64
 import json
 import os
 import sys
+import warnings
+warnings.filterwarnings("ignore", category=SyntaxWarning, module="langfuse")
 
 import anthropic
 import requests as http_requests
