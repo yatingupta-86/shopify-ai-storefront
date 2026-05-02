@@ -50,7 +50,7 @@ def _get_langfuse():
         _langfuse = Langfuse(
             public_key=pk,
             secret_key=sk,
-            host=os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com"),
+            host=os.environ.get("LANGFUSE_HOST", "https://us.cloud.langfuse.com"),
         )
         _langfuse.auth_check()
         log.info("langfuse.connected")
