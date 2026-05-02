@@ -52,9 +52,11 @@ def _get_langfuse():
             secret_key=sk,
             host=os.environ.get("LANGFUSE_HOST", "https://cloud.langfuse.com"),
         )
+        _langfuse.auth_check()
         log.info("langfuse.connected")
     except Exception as e:
         log.warning("langfuse.init_failed", extra={"error": str(e)})
+        _langfuse = None
     return _langfuse
 
 
@@ -298,11 +300,15 @@ Rules:
 
     # Start Langfuse trace for this enrichment run
     lf = _get_langfuse()
-    lf_trace = lf.trace(
-        name="product-enrichment",
-        input={"title": title, "product_id": product.get("id")},
-        metadata={"store": api_base},
-    ) if lf else None
+    try:
+        lf_trace = lf.trace(
+            name="product-enrichment",
+            input={"title": title, "product_id": product.get("id")},
+            metadata={"store": api_base},
+        ) if lf else None
+    except Exception as e:
+        log.warning("langfuse.trace_failed", extra={"error": str(e)})
+        lf_trace = None
 
     # Agentic loop — Claude decides what tools to call
     for iteration in range(10):  # max 10 iterations
