@@ -350,11 +350,13 @@ def enrich_product_background(product: dict):
 
     product_id = product.get("id")
     title = product.get("title", "Untitled")
+    variants = product.get("variants", [])
+    current_price = variants[0].get("price", "") if variants else ""
     t0 = time.time()
     log.info("agent.enrichment_started", extra={"product_id": product_id, "title": title})
 
     try:
-        enrichment, usage = run_product_agent(product, SHOPIFY_API_BASE, shopify_headers)
+        enrichment, usage, agent_context = run_product_agent(product, SHOPIFY_API_BASE, shopify_headers)
         if not enrichment:
             log.warning("agent.no_enrichment", extra={"product_id": product_id})
             return
@@ -420,15 +422,18 @@ def enrich_product_background(product: dict):
             if product.get("images"):
                 image_url = product["images"][0].get("src", "")
             review_queue[review_id] = {
-                "review_id":  review_id,
-                "product_id": product_id,
-                "title":      title,
-                "image_url":  image_url,
-                "enrichment": enrichment,
-                "reasons":    reasons,
-                "updates":    updates,
-                "status":     "pending",
-                "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
+                "review_id":           review_id,
+                "product_id":          product_id,
+                "title":               title,
+                "image_url":           image_url,
+                "original_description": product.get("body_html", ""),
+                "original_price":      current_price,
+                "enrichment":          enrichment,
+                "agent_context":       agent_context,
+                "reasons":             reasons,
+                "updates":             updates,
+                "status":              "pending",
+                "created_at":          time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
             log.info("agent.queued_for_review", extra={
                 "product_id": product_id, "review_id": review_id,
@@ -557,13 +562,16 @@ async def approve_review(review_id: str, request: Request):
         if str(gold[field]) != str(ai_comparable[field])
     ]
     _db.insert_golden_example({
-        "product_id":     item["product_id"],
-        "image_url":      item.get("image_url", ""),
-        "original_title": item["title"],
-        "ai_output":      ai_comparable,
-        "gold_output":    gold,
-        "fields_changed": fields_changed,
-        "outcome":        "approved",
+        "product_id":           item["product_id"],
+        "image_url":            item.get("image_url", ""),
+        "original_title":       item["title"],
+        "original_description": item.get("original_description", ""),
+        "original_price":       item.get("original_price", ""),
+        "agent_context":        item.get("agent_context", {}),
+        "ai_output":            ai_comparable,
+        "gold_output":          gold,
+        "fields_changed":       fields_changed,
+        "outcome":              "approved",
     })
 
     return {"status": "approved", "product_id": item["product_id"]}
@@ -580,10 +588,13 @@ async def reject_review(review_id: str):
     item = review_queue[review_id]
     ai = item["enrichment"]
     _db.insert_golden_example({
-        "product_id":     item["product_id"],
-        "image_url":      item.get("image_url", ""),
-        "original_title": item["title"],
-        "ai_output":      {
+        "product_id":           item["product_id"],
+        "image_url":            item.get("image_url", ""),
+        "original_title":       item["title"],
+        "original_description": item.get("original_description", ""),
+        "original_price":       item.get("original_price", ""),
+        "agent_context":        item.get("agent_context", {}),
+        "ai_output":            {
             "title": ai.get("title", ""), "description": ai.get("description", ""),
             "suggested_price": ai.get("suggested_price"), "tags": ", ".join(ai.get("tags", [])),
             "category": ai.get("category", ""), "seo_title": ai.get("seo_title", ""),

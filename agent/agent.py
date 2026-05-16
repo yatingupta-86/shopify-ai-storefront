@@ -400,10 +400,11 @@ def _policy_agent(title: str, description: str, tags: list[str],
 
 # ── Orchestrator ──────────────────────────────────────────────────────────────
 
-def run_product_agent(product: dict, api_base: str, get_headers_fn) -> tuple[dict | None, dict]:
+def run_product_agent(product: dict, api_base: str, get_headers_fn) -> tuple[dict | None, dict, dict]:
     """
     Orchestrate all specialist agents to enrich a newly uploaded product.
-    Returns (enrichment_dict, usage_dict).
+    Returns (enrichment_dict, usage_dict, agent_context_dict).
+    agent_context contains the store data the agents used — saved to golden dataset for evals.
     """
     title = product.get("title", "Untitled")
     current_price = ""
@@ -517,6 +518,14 @@ def run_product_agent(product: dict, api_base: str, get_headers_fn) -> tuple[dic
     usage = tracker.summary()
     log.info("agent.usage", extra=usage)
 
+    # Agent context — store data used during enrichment, saved to golden dataset for evals
+    agent_context = {
+        "collections":       [c["title"] for c in collections],
+        "price_history":     price_history,
+        "similar_products":  similar_products,
+        "vision_attributes": attributes,
+    }
+
     # Close Langfuse trace
     try:
         if lf_trace:
@@ -525,7 +534,7 @@ def run_product_agent(product: dict, api_base: str, get_headers_fn) -> tuple[dic
     except Exception:
         pass
 
-    return enrichment, usage
+    return enrichment, usage, agent_context
 
 
 # ── Confidence gates ──────────────────────────────────────────────────────────

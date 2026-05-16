@@ -26,17 +26,25 @@ Run this SQL once in Supabase SQL Editor:
 Captured passively on every seller approval. Used for offline evals.
 
     create table if not exists golden_dataset (
-        id              integer generated always as identity primary key,
-        product_id      bigint,
-        image_url       text,
-        original_title  text,
-        ai_output       jsonb,
-        gold_output     jsonb,
-        fields_changed  text[],
-        outcome         text,
-        created_at      timestamptz default now()
+        id                   integer generated always as identity primary key,
+        product_id           bigint,
+        image_url            text,
+        original_title       text,
+        original_description text,
+        original_price       text,
+        agent_context        jsonb,
+        ai_output            jsonb,
+        gold_output          jsonb,
+        fields_changed       text[],
+        outcome              text,
+        created_at           timestamptz default now()
     );
     create index if not exists golden_dataset_created_idx on golden_dataset (created_at desc);
+
+If you already created the table without these columns, run:
+    alter table golden_dataset add column if not exists original_description text;
+    alter table golden_dataset add column if not exists original_price text;
+    alter table golden_dataset add column if not exists agent_context jsonb;
 
 Usage:
     from db import insert_cost_record, load_cost_records
