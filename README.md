@@ -30,6 +30,48 @@ A floating chat widget on the storefront powered by LLaMA 3.3 70B (via Groq):
 
 ---
 
+## Multi-Agent Pipeline
+
+The enrichment system uses 5 specialist agents, each right-sized to its task:
+
+| Agent | Model | Input | Output |
+|-------|-------|-------|--------|
+| **Vision Agent** | Claude Opus 4.6 | Product image + title | product_type, material, color, style, use_case, image_quality |
+| **Copy Agent** | Claude Sonnet 4.6 | Vision attributes + collections | title, description, tags, category, category_confidence |
+| **Pricing Agent** | Claude Haiku 4.5 | Vision attributes + price history | suggested_price, price_confidence |
+| **SEO Agent** | Claude Haiku 4.5 | Title + description | seo_title, seo_description, image_alt_text |
+| **Policy Agent** | Claude Haiku 4.5 | Title + description + tags | policy_check, review_reasons |
+
+**Execution order — parallel where possible:**
+
+```
+Image loads
+     │
+     ├── Vision Agent (Opus)       ──┐
+     ├── fetch_collections           ├── parallel
+     └── fetch_price_history        ──┘
+                │
+                ├── Copy Agent (Sonnet)   ──┐
+                └── Pricing Agent (Haiku) ──┘ parallel
+                            │
+                            ├── SEO Agent (Haiku)    ──┐
+                            └── Policy Agent (Haiku) ──┘ parallel
+                                        │
+                               Orchestrator merges all outputs
+                                        │
+                              Confidence gates evaluate:
+                              • category_confidence ≥ 85%
+                              • price within historical range ±20%
+                              • image_quality = acceptable
+                              • policy_check = pass
+                                        │
+                          Auto-publish      OR      Review queue
+```
+
+**Cost saving vs single Opus agent:** Copy (~5x cheaper), Pricing/SEO/Policy (~20x cheaper each)
+
+---
+
 ## Architecture
 
 ```
@@ -39,16 +81,15 @@ Shopify Store
     │                                       │
     │                               Background task
     │                                       │
-    │                          ┌─── Agent (Claude Opus 4.6) ───┐
-    │                          │   fetch_collections           │
-    │                          │   fetch_similar_products      │
-    │                          │   fetch_price_history         │
-    │                          │   submit_enrichment           │
-    │                          └───────────────────────────────┘
+    │                          Multi-agent pipeline (see above)
     │                                       │
     │                          Confidence gates (85% threshold)
     │                                  ┌────┴────┐
     │                           Auto-publish   Review queue
+    │                                           │
+    │                                    Seller reviews
+    │                                    (golden dataset
+    │                                     captured here)
     │
     └── Customer browser ──► Chat widget (widget.js)
                                     │
@@ -67,7 +108,7 @@ Shopify Store
 | Layer | Technology |
 |-------|-----------|
 | Backend | Python, FastAPI |
-| Enrichment AI | Claude Opus 4.6 (Anthropic) — vision + tool use |
+| Enrichment AI | Claude Opus 4.6 (vision), Sonnet 4.6 (copy), Haiku 4.5 (pricing/SEO/policy) |
 | Chatbot AI | LLaMA 3.3 70B (via Groq) |
 | Storefront | Shopify — Horizon theme, Admin API, Webhooks |
 | Database | Supabase (Postgres) — agent cost ledger |
@@ -88,7 +129,9 @@ shopify-ai-storefront/
 ├── agent/
 │   ├── agent.py            # Agentic enrichment loop (Claude + tool use + Langfuse)
 │   └── register_webhook.py # One-time: registers product-created webhook with Shopify
-├── db.py                   # Supabase client — cost ledger persistence
+├── evals/
+│   └── run_evals.py        # Offline eval script — field change analysis + LLM judge
+├── db.py                   # Supabase client — cost ledger + golden dataset
 ├── observability.py        # Structured JSON logging + Sentry init
 ├── requirements.txt
 └── Procfile                # Render deployment
