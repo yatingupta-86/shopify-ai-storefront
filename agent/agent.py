@@ -240,7 +240,11 @@ def _vision_agent(title: str, image_content: list, tracker: _UsageTracker,
     """
     system = (
         "You are a product vision analyst for Mera Shelf, an Indian handmade goods store. "
-        "Analyze the product image carefully and extract structured attributes."
+        "Analyze the product image carefully and extract structured attributes.\n\n"
+        "image_quality calibration:\n"
+        "  acceptable — product is clearly visible, well-lit, background is not distracting\n"
+        "  poor       — blurry, too dark, product not clearly visible, multiple unrelated "
+        "items in frame, or screenshot of another website. When in doubt, mark as poor."
     )
     user_content = [
         {"type": "text", "text": f"Product title: {title}\n\nAnalyze this product image and extract attributes."},
@@ -272,7 +276,13 @@ def _copy_agent(title: str, attributes: dict, collections: list[dict],
     system = (
         "You are a product copywriter for Mera Shelf, an Indian handmade goods store. "
         "Write compelling, honest product copy based on the provided attributes. "
-        "All categories must be chosen from the available collections list."
+        "All categories must be chosen from the available collections list.\n\n"
+        "IMPORTANT — category_confidence calibration:\n"
+        "  0.9–1.0  Only when the product unambiguously fits exactly one category\n"
+        "  0.7–0.89 When it fits one category well but could fit another\n"
+        "  0.5–0.69 When two or more categories are plausible\n"
+        "  < 0.5   When no category is a good fit or the product is ambiguous\n"
+        "Be conservative — it is better to under-claim and let a human confirm."
     )
     collection_names = [c["title"] for c in collections]
     user_content = [{
@@ -543,7 +553,11 @@ def evaluate_confidence(enrichment: dict, price_history: dict) -> tuple[bool, li
         reasons.append("Product content failed policy check — please review the title and description.")
 
     # Gate 4: Price within historical range
-    if price_history and enrichment.get("suggested_price"):
+    if not price_history:
+        reasons.append(
+            "No price history available — cannot validate suggested price. Please confirm."
+        )
+    elif enrichment.get("suggested_price"):
         price = enrichment["suggested_price"]
         lo = price_history["min"] * (1 - PRICE_TOLERANCE)
         hi = price_history["max"] * (1 + PRICE_TOLERANCE)
