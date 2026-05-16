@@ -59,8 +59,9 @@ MODEL_PRICING = {
 }
 
 # ── Confidence thresholds ─────────────────────────────────────────────────────
-CATEGORY_CONFIDENCE_THRESHOLD = 0.85
-PRICE_TOLERANCE = 0.20   # allow 20% outside historical range
+CATEGORY_CONFIDENCE_THRESHOLD = 0.95  # very strict — only unambiguous matches auto-publish
+PRICE_CONFIDENCE_THRESHOLD    = 0.85  # require high price confidence too
+PRICE_TOLERANCE               = 0.10  # tightened from 20% to 10% outside historical range
 
 
 # ── Langfuse (lazy init — no-op if keys not set) ──────────────────────────────
@@ -553,15 +554,23 @@ def evaluate_confidence(enrichment: dict, price_history: dict) -> tuple[bool, li
             f"Agent suggested '{enrichment.get('category')}' but isn't certain."
         )
 
-    # Gate 2: Image quality
+    # Gate 2: Price confidence
+    price_conf = enrichment.get("price_confidence", 0)
+    if price_conf < PRICE_CONFIDENCE_THRESHOLD:
+        reasons.append(
+            f"Price confidence is {price_conf:.0%} (below {PRICE_CONFIDENCE_THRESHOLD:.0%} threshold). "
+            f"Agent suggested ₹{enrichment.get('suggested_price')} but isn't certain."
+        )
+
+    # Gate 3: Image quality
     if enrichment.get("image_quality") == "poor":
         reasons.append("Product image is poor quality or unclear — please upload a clearer photo.")
 
-    # Gate 3: Policy check
+    # Gate 4: Policy check
     if enrichment.get("policy_check") == "fail":
         reasons.append("Product content failed policy check — please review the title and description.")
 
-    # Gate 4: Price within historical range
+    # Gate 5: Price within historical range
     if not price_history:
         reasons.append(
             "No price history available — cannot validate suggested price. Please confirm."
