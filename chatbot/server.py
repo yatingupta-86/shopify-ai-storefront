@@ -362,6 +362,20 @@ def enrich_product_background(product: dict):
         price_history = fetch_price_history(SHOPIFY_API_BASE, shopify_headers())
         auto_publish, reasons = evaluate_confidence(enrichment, price_history)
 
+        log.info("agent.confidence_check", extra={
+            "product_id":          product_id,
+            "category":            enrichment.get("category"),
+            "category_confidence": enrichment.get("category_confidence"),
+            "price_confidence":    enrichment.get("price_confidence"),
+            "suggested_price":     enrichment.get("suggested_price"),
+            "image_quality":       enrichment.get("image_quality"),
+            "policy_check":        enrichment.get("policy_check"),
+            "review_reasons":      enrichment.get("review_reasons", []),
+            "price_history":       price_history,
+            "auto_publish":        auto_publish,
+            "final_reasons":       reasons,
+        })
+
         updates = {
             "product": {
                 "id": product_id,
