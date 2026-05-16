@@ -1,11 +1,11 @@
 """
 Supabase persistence layer for Mera Shelf.
 
-Table: enrichment_costs
-Run this SQL once in your Supabase project (SQL Editor → New query):
+─── Table: enrichment_costs ────────────────────────────────────────────────────
+Run this SQL once in Supabase SQL Editor:
 
     create table if not exists enrichment_costs (
-        id            uuid primary key default gen_random_uuid(),
+        id            integer generated always as identity primary key,
         ts            timestamptz not null,
         product_id    bigint,
         title         text,
@@ -20,12 +20,27 @@ Run this SQL once in your Supabase project (SQL Editor → New query):
         cost_inr      numeric,
         created_at    timestamptz default now()
     );
-
-    -- Optional: index for dashboard queries
     create index if not exists enrichment_costs_ts_idx on enrichment_costs (ts desc);
+
+─── Table: golden_dataset ──────────────────────────────────────────────────────
+Captured passively on every seller approval. Used for offline evals.
+
+    create table if not exists golden_dataset (
+        id              integer generated always as identity primary key,
+        product_id      bigint,
+        image_url       text,
+        original_title  text,
+        ai_output       jsonb,
+        gold_output     jsonb,
+        fields_changed  text[],
+        outcome         text,
+        created_at      timestamptz default now()
+    );
+    create index if not exists golden_dataset_created_idx on golden_dataset (created_at desc);
 
 Usage:
     from db import insert_cost_record, load_cost_records
+    from db import insert_golden_example, load_golden_dataset
 """
 
 import os
@@ -81,6 +96,48 @@ def insert_cost_record(record: dict) -> bool:
     except Exception as e:
         log.error("db.insert_failed", extra={"error": str(e)})
         return False
+
+
+def insert_golden_example(example: dict) -> bool:
+    """
+    Persist one golden example (AI output vs seller-approved output) to Supabase.
+    Called automatically on every seller approval in the review queue.
+    """
+    client = _get_client()
+    if not client:
+        return False
+    try:
+        row = dict(example)
+        row["fields_changed"] = list(row.get("fields_changed", []))
+        client.table("golden_dataset").insert(row).execute()
+        log.info("db.golden_example_saved", extra={"product_id": example.get("product_id")})
+        return True
+    except Exception as e:
+        log.error("db.golden_insert_failed", extra={"error": str(e)})
+        return False
+
+
+def load_golden_dataset() -> list[dict]:
+    """
+    Load all golden examples from Supabase, newest first.
+    Returns empty list if Supabase is not configured or fails.
+    """
+    client = _get_client()
+    if not client:
+        return []
+    try:
+        resp = (
+            client.table("golden_dataset")
+            .select("*")
+            .order("created_at", desc=True)
+            .execute()
+        )
+        records = resp.data or []
+        log.info("db.golden_dataset_loaded", extra={"count": len(records)})
+        return records
+    except Exception as e:
+        log.error("db.golden_load_failed", extra={"error": str(e)})
+        return []
 
 
 def load_cost_records() -> list[dict]:

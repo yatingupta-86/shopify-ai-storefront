@@ -402,14 +402,18 @@ def enrich_product_background(product: dict):
                 log.error("agent.publish_failed", extra={"product_id": product_id, "response": r.text[:200]})
         else:
             review_id = str(uuid.uuid4())[:8]
+            image_url = ""
+            if product.get("images"):
+                image_url = product["images"][0].get("src", "")
             review_queue[review_id] = {
-                "review_id": review_id,
+                "review_id":  review_id,
                 "product_id": product_id,
-                "title": title,
+                "title":      title,
+                "image_url":  image_url,
                 "enrichment": enrichment,
-                "reasons": reasons,
-                "updates": updates,
-                "status": "pending",
+                "reasons":    reasons,
+                "updates":    updates,
+                "status":     "pending",
                 "created_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             }
             log.info("agent.queued_for_review", extra={
@@ -511,6 +515,43 @@ async def approve_review(review_id: str, request: Request):
         )
 
     review_queue[review_id]["status"] = "approved"
+
+    # ── Capture golden example for offline evals ──────────────────────────────
+    ai = item["enrichment"]
+    gold = {
+        "title":           edits.get("title", ai.get("title", "")) if edits else ai.get("title", ""),
+        "description":     edits.get("description", ai.get("description", "")) if edits else ai.get("description", ""),
+        "suggested_price": edits.get("price", ai.get("suggested_price")) if edits else ai.get("suggested_price"),
+        "tags":            edits.get("tags", ", ".join(ai.get("tags", []))) if edits else ", ".join(ai.get("tags", [])),
+        "category":        ai.get("category", ""),
+        "seo_title":       ai.get("seo_title", ""),
+        "seo_description": ai.get("seo_description", ""),
+        "image_alt_text":  ai.get("image_alt_text", ""),
+    }
+    ai_comparable = {
+        "title":           ai.get("title", ""),
+        "description":     ai.get("description", ""),
+        "suggested_price": ai.get("suggested_price"),
+        "tags":            ", ".join(ai.get("tags", [])),
+        "category":        ai.get("category", ""),
+        "seo_title":       ai.get("seo_title", ""),
+        "seo_description": ai.get("seo_description", ""),
+        "image_alt_text":  ai.get("image_alt_text", ""),
+    }
+    fields_changed = [
+        field for field in gold
+        if str(gold[field]) != str(ai_comparable[field])
+    ]
+    _db.insert_golden_example({
+        "product_id":     item["product_id"],
+        "image_url":      item.get("image_url", ""),
+        "original_title": item["title"],
+        "ai_output":      ai_comparable,
+        "gold_output":    gold,
+        "fields_changed": fields_changed,
+        "outcome":        "approved",
+    })
+
     return {"status": "approved", "product_id": item["product_id"]}
 
 
@@ -520,6 +561,25 @@ async def reject_review(review_id: str):
     if review_id not in review_queue:
         raise HTTPException(status_code=404, detail="Review item not found")
     review_queue[review_id]["status"] = "rejected"
+
+    # Rejected products are also golden signal — AI output was bad enough to reject
+    item = review_queue[review_id]
+    ai = item["enrichment"]
+    _db.insert_golden_example({
+        "product_id":     item["product_id"],
+        "image_url":      item.get("image_url", ""),
+        "original_title": item["title"],
+        "ai_output":      {
+            "title": ai.get("title", ""), "description": ai.get("description", ""),
+            "suggested_price": ai.get("suggested_price"), "tags": ", ".join(ai.get("tags", [])),
+            "category": ai.get("category", ""), "seo_title": ai.get("seo_title", ""),
+            "seo_description": ai.get("seo_description", ""), "image_alt_text": ai.get("image_alt_text", ""),
+        },
+        "gold_output":    {},
+        "fields_changed": [],
+        "outcome":        "rejected",
+    })
+
     return {"status": "rejected"}
 
 
