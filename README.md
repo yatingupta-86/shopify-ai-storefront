@@ -130,7 +130,7 @@ shopify-ai-storefront/
 │   ├── agent.py            # Agentic enrichment loop (Claude + tool use + Langfuse)
 │   └── register_webhook.py # One-time: registers product-created webhook with Shopify
 ├── evals/
-│   └── run_evals.py        # Offline eval script — field change analysis + LLM judge
+│   └── run_evals.py        # Offline eval script — field change analysis + LLM judge + replay
 ├── db.py                   # Supabase client — cost ledger + golden dataset
 ├── observability.py        # Structured JSON logging + Sentry init
 ├── requirements.txt
@@ -242,6 +242,88 @@ create table if not exists enrichment_costs (
     created_at    timestamptz default now()
 );
 ```
+
+---
+
+## Offline Evals
+
+The eval system uses the golden dataset (passively collected from seller approvals/rejections) to measure agent quality without deploying to production.
+
+### Golden Dataset
+
+Captured automatically every time a seller approves or rejects a product in the review queue. Each record stores:
+- Original seller inputs (title, description, price, image URL)
+- Store context the agent saw (collections, price history, similar products)
+- AI-generated output
+- Seller-edited gold output and which fields were changed
+- Outcome (`approved` / `rejected`)
+
+Run this SQL once in Supabase to create the table:
+
+```sql
+create table if not exists golden_dataset (
+    id                   integer generated always as identity primary key,
+    product_id           bigint,
+    image_url            text,
+    original_title       text,
+    original_description text,
+    original_price       text,
+    agent_context        jsonb,
+    ai_output            jsonb,
+    gold_output          jsonb,
+    fields_changed       text[],
+    outcome              text,
+    created_at           timestamptz default now()
+);
+```
+
+### Running Evals
+
+```bash
+# Full eval — field change analysis + LLM-as-a-judge (uses Claude API)
+python3 evals/run_evals.py
+
+# Field change analysis only — free, no API calls
+python3 evals/run_evals.py --no-judge
+
+# Evaluate only the last 20 examples
+python3 evals/run_evals.py --limit 20
+
+# Replay mode — re-run agent on original inputs, compare old vs new scores
+python3 evals/run_evals.py --replay
+```
+
+### Replay Mode
+
+Re-runs the live agent code on each golden example's original inputs and scores both the old output (stored in the golden dataset) and the new output (from the replay) using the LLM judge. Reports improved / regressed / same per dimension.
+
+Use this before deploying any prompt changes:
+
+```
+  Dimension                  Old avg   New avg      Change  Verdict
+  ─────────────────────────  ───────  ───────  ─────────  ──────────
+  overall                        3.0       4.0       +1.00  ✅ IMPROVED
+  accuracy                       5.0       5.0       +0.00  ➡️  SAME
+  description_quality            4.0       5.0       +1.00  ✅ IMPROVED
+  category_fit                   3.0       3.0       +0.00  ➡️  SAME
+  price_reasonableness           3.0       3.0       +0.00  ➡️  SAME
+  seo_correctness                4.0       4.0       +0.00  ➡️  SAME
+```
+
+**Safe** — replay runs the agent read-only. No products are published or modified in Shopify.
+
+**Cost** — ~$0.02–0.05 per example (agent run + two judge calls per example).
+
+**Reliability** — results are meaningful at 20+ examples. With fewer examples, score swings reflect LLM sampling variance more than real quality differences.
+
+### Interpreting Results
+
+| Signal | What it means |
+|--------|--------------|
+| High `field_change_rate` on a field | Sellers frequently edit that field — that agent's prompt needs work |
+| Judge score < 3.0 on a dimension | That dimension needs prompt improvement |
+| `--replay` shows IMPROVED | Prompt change is safe to deploy |
+| `--replay` shows REGRESSED | Revert the prompt change before deploying |
 
 ---
 
