@@ -11,15 +11,23 @@ What it does:
        - AI generated output
      Judge model: Claude Sonnet 4.6 (vision-capable, can detect hallucination)
 
+  --replay mode:
+     Re-runs the actual agent code on each golden example's original inputs,
+     scores both old output (from golden dataset) and new output (from replay),
+     and reports whether your prompt changes improved or regressed quality.
+     NO Shopify writes — read-only. Agent runs but does not publish anything.
+
 Usage:
   python3 evals/run_evals.py                  # full eval with LLM judge
   python3 evals/run_evals.py --no-judge       # field change analysis only (free)
   python3 evals/run_evals.py --limit 20       # evaluate last 20 examples only
+  python3 evals/run_evals.py --replay         # re-run agent + compare old vs new scores
 
 Interpret results:
   High field_change_rate  → that agent's prompt needs improvement
   Low judge score (<3.0)  → that dimension needs improvement
-  Run before/after a prompt change to confirm improvement (regression detection)
+  --replay IMPROVED       → prompt change made things better, safe to deploy
+  --replay REGRESSED      → prompt change made things worse, revert it
 """
 
 import argparse
@@ -296,12 +304,164 @@ def print_report(examples: list[dict], field_stats: dict, judge_stats: dict):
     print("\n" + "═" * 62 + "\n")
 
 
+# ── Replay eval ──────────────────────────────────────────────────────────────
+
+def _shopify_headers() -> dict:
+    """Build Shopify headers from env vars for replay eval."""
+    token = os.environ.get("SHOPIFY_ACCESS_TOKEN", "")
+    return {"X-Shopify-Access-Token": token}
+
+
+def _build_product_dict(example: dict) -> dict:
+    """
+    Reconstruct a minimal Shopify product dict from a golden example.
+    Only contains fields the agent actually uses — no Shopify writes possible.
+    """
+    return {
+        "id":        example.get("product_id"),
+        "title":     example.get("original_title", "Untitled"),
+        "body_html": example.get("original_description", ""),
+        "variants":  [{"id": 0, "price": example.get("original_price", "")}],
+        "images":    [{"src": example["image_url"]}] if example.get("image_url") else [],
+    }
+
+
+def replay_eval(examples: list[dict]) -> None:
+    """
+    Re-run the agent on each golden example's original inputs.
+    Scores old output vs new output with the judge.
+    Reports improved / regressed / same per dimension.
+
+    SAFE: agent returns a dict only — no Shopify API writes happen here.
+    """
+    from agent.agent import run_product_agent
+
+    api_base = (
+        f"https://{os.environ.get('SHOPIFY_STORE_URL', '')}"
+        f"/admin/api/{os.environ.get('SHOPIFY_API_VERSION', '2026-04')}"
+    )
+
+    dims = ["overall", "accuracy", "description_quality",
+            "category_fit", "price_reasonableness", "seo_correctness"]
+
+    old_scores_all = defaultdict(list)
+    new_scores_all = defaultdict(list)
+    results        = []
+
+    print(f"\n{'─'*62}")
+    print("  REPLAY MODE — re-running agent on golden inputs")
+    print(f"  ⚠️  This calls Claude API — costs ~$0.02–0.05 per example")
+    print(f"  ✅  Read-only — no Shopify writes")
+    print(f"{'─'*62}\n")
+
+    for i, example in enumerate(examples):
+        title = example.get("original_title", "Untitled")
+        print(f"[{i+1}/{len(examples)}] Replaying: {title[:50]}")
+
+        # ── Score old output (from golden dataset) ─────────────────────────
+        print("  Scoring old output (from golden dataset)...")
+        old_scores = judge(example)
+
+        # ── Re-run agent on original inputs ────────────────────────────────
+        print("  Re-running agent on original inputs...")
+        product = _build_product_dict(example)
+        try:
+            new_enrichment, _, _ = run_product_agent(
+                product, api_base, _shopify_headers
+            )
+        except Exception as e:
+            print(f"  ❌ Agent failed: {e}")
+            continue
+
+        if not new_enrichment:
+            print("  ❌ Agent returned no enrichment — skipping")
+            continue
+
+        # ── Score new output ───────────────────────────────────────────────
+        print("  Scoring new output...")
+        new_example = dict(example)
+        new_example["ai_output"] = {
+            "title":           new_enrichment.get("title", ""),
+            "description":     new_enrichment.get("description", ""),
+            "suggested_price": new_enrichment.get("suggested_price"),
+            "tags":            ", ".join(new_enrichment.get("tags", [])),
+            "category":        new_enrichment.get("category", ""),
+            "seo_title":       new_enrichment.get("seo_title", ""),
+            "seo_description": new_enrichment.get("seo_description", ""),
+            "image_alt_text":  new_enrichment.get("image_alt_text", ""),
+        }
+        new_scores = judge(new_example)
+
+        # ── Per-example verdict ────────────────────────────────────────────
+        old_overall = old_scores.get("overall", 0)
+        new_overall = new_scores.get("overall", 0)
+        if new_overall > old_overall:
+            verdict = "✅ IMPROVED"
+        elif new_overall < old_overall:
+            verdict = "❌ REGRESSED"
+        else:
+            verdict = "➡️  SAME"
+
+        print(f"  Overall: {old_overall} → {new_overall}  {verdict}")
+        if new_scores.get("reason"):
+            print(f"  Reason: {new_scores['reason']}")
+
+        for dim in dims:
+            if old_scores.get(dim, 0) > 0:
+                old_scores_all[dim].append(old_scores[dim])
+            if new_scores.get(dim, 0) > 0:
+                new_scores_all[dim].append(new_scores[dim])
+
+        results.append({
+            "title":      title,
+            "old_scores": old_scores,
+            "new_scores": new_scores,
+            "verdict":    verdict,
+        })
+        print()
+
+    # ── Aggregate report ───────────────────────────────────────────────────
+    print("\n" + "═" * 62)
+    print("  REPLAY EVAL — AGGREGATE RESULTS")
+    print("═" * 62)
+    print(f"\n  {'Dimension':<25} {'Old avg':>8}  {'New avg':>8}  {'Change':>10}  Verdict")
+    print(f"  {'─'*25}  {'─'*7}  {'─'*7}  {'─'*9}  {'─'*10}")
+
+    for dim in dims:
+        old_avg = round(sum(old_scores_all[dim]) / len(old_scores_all[dim]), 2) if old_scores_all[dim] else 0
+        new_avg = round(sum(new_scores_all[dim]) / len(new_scores_all[dim]), 2) if new_scores_all[dim] else 0
+        delta   = round(new_avg - old_avg, 2)
+        if delta > 0:
+            verdict = "✅ IMPROVED"
+        elif delta < 0:
+            verdict = "❌ REGRESSED"
+        else:
+            verdict = "➡️  SAME"
+        print(f"  {dim:<25} {old_avg:>8}  {new_avg:>8}  {delta:>+10.2f}  {verdict}")
+
+    improved  = sum(1 for r in results if "IMPROVED"  in r["verdict"])
+    regressed = sum(1 for r in results if "REGRESSED" in r["verdict"])
+    same      = sum(1 for r in results if "SAME"      in r["verdict"])
+    print(f"\n  Examples: {improved} improved · {regressed} regressed · {same} same")
+
+    if regressed == 0 and improved > 0:
+        print("\n  ✅ Prompt change looks SAFE TO DEPLOY — no regressions detected.")
+    elif regressed > 0:
+        print(f"\n  ⚠️  {regressed} regression(s) detected — review before deploying.")
+    else:
+        print("\n  ➡️  No change detected — prompt may need more significant adjustment.")
+
+    print("\n" + "═" * 62 + "\n")
+
+
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit",    type=int, default=None, help="Evaluate last N examples only")
     parser.add_argument("--no-judge", action="store_true",    help="Skip LLM judge (free, instant)")
+    parser.add_argument("--replay",   action="store_true",
+                        help="Re-run agent on golden inputs and compare old vs new scores")
     args = parser.parse_args()
 
     print("\nLoading golden dataset from Supabase...")
@@ -315,6 +475,10 @@ def main():
         examples = examples[:args.limit]
 
     print(f"Loaded {len(examples)} examples.\n")
+
+    if args.replay:
+        replay_eval(examples)
+        return
 
     print("Running field change analysis...")
     field_stats = field_change_analysis(examples)
