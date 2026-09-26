@@ -15,8 +15,9 @@ When a seller uploads a product photo to Shopify, an AI agent takes over:
 - Applies multi-gate confidence scoring to decide: **auto-publish** or **queue for human review**
 
 Gates that trigger human review:
-- Category confidence < 85%
-- Suggested price outside store's historical range (±20%)
+- Category confidence < 95%
+- Price confidence < 85%
+- Suggested price outside store's historical range (±10%)
 - Poor image quality
 - Content policy failure
 
@@ -60,8 +61,9 @@ Image loads
                                Orchestrator merges all outputs
                                         │
                               Confidence gates evaluate:
-                              • category_confidence ≥ 85%
-                              • price within historical range ±20%
+                              • category_confidence ≥ 95%
+                              • price_confidence ≥ 85%
+                              • price within historical range ±10%
                               • image_quality = acceptable
                               • policy_check = pass
                                         │
